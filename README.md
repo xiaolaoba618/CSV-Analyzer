@@ -82,7 +82,8 @@ python main.py
 *图：工具GUI应用界面*
 
 
-<img width="762" height="701" alt="f5314513b5a322c7c212194dc5eb568d" src="https://github.com/user-attachments/assets/59fe494a-a4ae-4cf4-8f5a-40d7acfe4fe1" />
+<img width="2535" height="1118" alt="7dcc8fd93ecfde6c1c0aff559cc3960e" src="https://github.com/user-attachments/assets/62075e5d-fdb8-417f-a21c-bda0ac3444c3" />
+
 
 
 *图：生成的交互式HTML报告/Dashboard界面*
