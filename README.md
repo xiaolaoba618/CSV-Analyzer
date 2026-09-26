@@ -49,7 +49,7 @@ pip install -r requirements.txt
 在项目根目录运行：
 
 ```bash
-python main.py
+python .\gui\app.py
 ```
 
 如果项目入口文件名称不同，请替换为实际的 GUI 启动文件。
