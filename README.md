@@ -74,6 +74,20 @@ python main.py
 
 具体依赖版本请以项目的 `requirements.txt` 为准。
 
+## 部分图片展示
+
+<img width="762" height="701" alt="f5314513b5a322c7c212194dc5eb568d" src="https://github.com/user-attachments/assets/c1bfa878-2b5d-4bf2-a95e-132ac3c94340" />
+
+
+*图：工具GUI应用界面*
+
+
+<img width="762" height="701" alt="f5314513b5a322c7c212194dc5eb568d" src="https://github.com/user-attachments/assets/59fe494a-a4ae-4cf4-8f5a-40d7acfe4fe1" />
+
+
+*图：生成的交互式HTML报告/Dashboard界面*
+
+
 ## License
 
-本项目供学习与交流使用。具体开源许可请以仓库中的 LICENSE 文件为准。
+MIT
