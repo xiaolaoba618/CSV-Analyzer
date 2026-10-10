@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "csv-analyzer"
+version = "0.1.1"
+description = "A robust CSV analysis engine with automatic profiling, statistics, data quality analysis, visualization, HTML reports, and an Agent-ready result interface."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "CSV Analyzer contributors" }
+]
+dependencies = [
+    "numpy>=2.0,<3",
+    "pandas>=2.2,<3",
+    "scipy>=1.14,<2",
+    "matplotlib>=3.8,<4",
+    "PySide6>=6.7,<7",
+]
+
+[project.scripts]
+csv-analyzer = "main:main"
+
+[tool.setuptools]
+py-modules = ["analyzer", "analysis_result", "tool_registry", "main"]
+
+[tool.setuptools.packages.find]
+include = ["tools*", "report*", "gui*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

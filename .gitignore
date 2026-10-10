@@ -1,0 +1,5 @@
+.venv/
+.workbuddy/
+dist/
+output/
+.idea/

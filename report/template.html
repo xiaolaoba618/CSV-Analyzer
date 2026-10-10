@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0">
+
+    <title>{{TITLE}}</title>
+
+    <style>
+
+        body {
+            font-family:
+                "Microsoft YaHei",
+                "Noto Sans CJK SC",
+                Arial,
+                sans-serif;
+
+            margin: 0;
+            padding: 0;
+
+            background-color: #f5f7fa;
+
+            color: #2c3e50;
+        }
+
+        .container {
+            width: 90%;
+            max-width: 1400px;
+
+            margin: 30px auto;
+        }
+
+        header {
+            background: white;
+
+            padding: 30px;
+
+            border-radius: 12px;
+
+            margin-bottom: 25px;
+
+            box-shadow:
+                0 2px 10px
+                rgba(0, 0, 0, 0.05);
+        }
+
+        h1 {
+            margin-top: 0;
+
+            color: #1f2937;
+        }
+
+        h2 {
+            margin-top: 0;
+
+            color: #374151;
+        }
+
+        h3 {
+            color: #4b5563;
+        }
+
+        .section {
+            background: white;
+
+            padding: 25px;
+
+            border-radius: 12px;
+
+            margin-bottom: 25px;
+
+            box-shadow:
+                0 2px 10px
+                rgba(0, 0, 0, 0.05);
+        }
+
+        .summary-grid {
+            display: grid;
+
+            grid-template-columns:
+                repeat(
+                    auto-fit,
+                    minmax(180px, 1fr)
+                );
+
+            gap: 15px;
+        }
+
+        .summary-card {
+            background: #f8fafc;
+
+            border-radius: 10px;
+
+            padding: 20px;
+
+            text-align: center;
+        }
+
+        .summary-card .value {
+            font-size: 28px;
+
+            font-weight: bold;
+
+            margin-top: 10px;
+        }
+
+        table {
+            width: 100%;
+
+            border-collapse: collapse;
+
+            margin-top: 15px;
+        }
+
+        th,
+        td {
+            padding: 10px;
+
+            border-bottom:
+                1px solid #e5e7eb;
+
+            text-align: left;
+        }
+
+        th {
+            background-color: #f8fafc;
+        }
+
+        .warning {
+            color: #b45309;
+
+            font-weight: bold;
+        }
+
+        .critical {
+            color: #dc2626;
+
+            font-weight: bold;
+        }
+
+        .ok {
+            color: #15803d;
+
+            font-weight: bold;
+        }
+
+        .plot-grid {
+            display: grid;
+
+            grid-template-columns:
+                repeat(
+                    auto-fit,
+                    minmax(400px, 1fr)
+                );
+
+            gap: 20px;
+        }
+
+        .plot-card {
+            border:
+                1px solid #e5e7eb;
+
+            border-radius: 10px;
+
+            padding: 15px;
+
+            background: white;
+        }
+
+        .plot-card img {
+            width: 100%;
+
+            height: auto;
+
+            display: block;
+        }
+
+        .correlation-pair {
+            padding: 12px;
+
+            margin: 8px 0;
+
+            background: #f8fafc;
+
+            border-radius: 8px;
+        }
+
+        .footer {
+            text-align: center;
+
+            color: #6b7280;
+
+            margin: 30px 0;
+        }
+
+    </style>
+
+</head>
+
+
+<body>
+
+<div class="container">
+
+
+    <!-- ================================================= -->
+    <!-- Header -->
+    <!-- ================================================= -->
+
+    <header>
+
+        <h1>{{TITLE}}</h1>
+
+        <p>
+            自动生成的数据分析报告
+        </p>
+
+    </header>
+
+
+    <!-- ================================================= -->
+    <!-- Dataset Overview -->
+    <!-- ================================================= -->
+
+    <section class="section">
+
+        <h2>一、数据集概况</h2>
+
+        {{DATASET_OVERVIEW}}
+
+    </section>
+
+
+    <!-- ================================================= -->
+    <!-- Column Information -->
+    <!-- ================================================= -->
+
+    <section class="section">
+
+        <h2>二、变量概况</h2>
+
+        {{COLUMN_OVERVIEW}}
+
+    </section>
+
+
+    <!-- ================================================= -->
+    <!-- Statistics -->
+    <!-- ================================================= -->
+
+    <section class="section">
+
+        <h2>三、描述性统计</h2>
+
+        {{STATISTICS}}
+
+    </section>
+
+
+    <!-- ================================================= -->
+    <!-- Data Quality -->
+    <!-- ================================================= -->
+
+    <section class="section">
+
+        <h2>四、数据质量检查</h2>
+
+        {{QUALITY}}
+
+    </section>
+
+    <!-- ================================================= -->
+    <!-- Data Missingness -->
+    <!-- ================================================= -->
+
+    <section class="section">
+
+        <h2>缺失值模式分析</h2>
+
+        {{MISSINGNESS}}
+
+    </section>
+
+    <!-- ================================================= -->
+    <!-- Time Analysis -->
+    <!-- ================================================= -->
+
+    <section class="section">
+
+        <h2>时间分析</h2>
+
+        {{TIME_ANALYSIS}}
+
+    </section>
+
+    <!-- ================================================= -->
+    <!-- Correlation -->
+    <!-- ================================================= -->
+
+    <section class="section">
+
+        <h2>五、相关性分析</h2>
+
+        {{CORRELATION}}
+
+    </section>
+
+
+    <!-- ================================================= -->
+    <!-- Visualization -->
+    <!-- ================================================= -->
+
+    <section class="section">
+
+        <h2>六、数据可视化</h2>
+
+        {{VISUALIZATION}}
+
+    </section>
+
+
+    <div class="footer">
+
+        Generated by CSV Analyzer
+
+    </div>
+
+
+</div>
+
+</body>
+
+</html>
