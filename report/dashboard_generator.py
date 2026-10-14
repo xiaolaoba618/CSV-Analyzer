@@ -178,6 +178,69 @@ def _prepare_variable_summary(df, variable_types):
         )
     return variables
 
+def _resolve_time_column(df, variable_types):
+    """返回 (time_type, time_column)，优先使用 datetime，其次 time_index。"""
+    datetime_columns = [
+        column
+        for column, info
+        in (variable_types or {}).items()
+        if (info.get("detected_type") == "datetime" and column in df.columns)
+    ]
+    time_index_columns = [
+        column
+        for column, info
+        in (variable_types or {}).items()
+        if (info.get("detected_type") == "time_index" and column in df.columns)
+    ]
+    if datetime_columns:
+        column = ("DATETIME" if "DATETIME" in datetime_columns else datetime_columns[0])
+        return ("datetime", column)
+    if time_index_columns:
+        return ("time_index", time_index_columns[0])
+    return (None, None)
+
+def _time_series_values(series, time_type):
+    """把时间列转换为可比较的数值：datetime 用毫秒时间戳，time_index 用浮点数值。"""
+    if time_type == "time_index":
+        return pd.to_numeric(series, errors="coerce")
+    parsed = pd.to_datetime(series, errors="coerce")
+    try:
+        if getattr(parsed.dt, "tz", None) is not None:
+            parsed = parsed.dt.tz_convert(None)
+    except (AttributeError, TypeError):
+        pass
+    return ((parsed - pd.Timestamp("1970-01-01")) / pd.Timedelta(milliseconds=1))
+
+def _prepare_time_filter(df, variable_types):
+    """准备时间范围筛选所需的元数据（不改变原有数据结构，仅新增）。"""
+    time_type, time_column = _resolve_time_column(df, variable_types)
+    if time_type is None or time_column is None:
+        return {"available": False, "time_type": None, "time_column": None, "min": None, "max": None}
+    try:
+        values = _time_series_values(df[time_column], time_type).dropna()
+    except Exception:
+        values = None
+    if values is None or len(values) == 0:
+        return {"available": False, "time_type": str(time_type), "time_column": str(time_column), "min": None, "max": None}
+    return {
+        "available": True,
+        "time_type": str(time_type),
+        "time_column": str(time_column),
+        "min": float(values.min()),
+        "max": float(values.max())
+    }
+
+def _prepare_table_preview(df, max_rows=10):
+    """准备数据表预览（前 max_rows 行），用于 Dashboard 中的表格预览面板。"""
+    if df is None or df.empty:
+        return {"columns": [], "rows": []}
+    head = df.head(max_rows)
+    columns = [str(column) for column in head.columns]
+    rows = []
+    for _, row in head.iterrows():
+        rows.append([_make_json_safe(row[column]) for column in head.columns])
+    return {"columns": columns, "rows": rows}
+
 def _prepare_numeric_data(df, variable_types, max_points=MAX_NUMERIC_POINTS):
     numeric_columns = [
         column
@@ -188,14 +251,24 @@ def _prepare_numeric_data(df, variable_types, max_points=MAX_NUMERIC_POINTS):
     if not numeric_columns:
         return {"columns": [], "rows": []}
     categorical_columns = _get_categorical_columns(df, variable_types)
+    time_type, time_column = _resolve_time_column(df, variable_types)
     # 保持采样行的分类字段与数值字段对应。
     columns_to_use = list(dict.fromkeys(numeric_columns + categorical_columns))
+    # 时间列仅用于生成逐行可比较的时间值，不作为数值/分类变量暴露。
+    if time_column is not None and time_column not in columns_to_use:
+        columns_to_use = columns_to_use + [time_column]
     data = df[columns_to_use].copy()
     if len(data) > max_points:
         data = data.sample(n=max_points, random_state=42)
     data = data.replace([np.inf, -np.inf], np.nan)
+    time_values = None
+    if time_column is not None:
+        try:
+            time_values = _time_series_values(data[time_column], time_type)
+        except Exception:
+            time_values = None
     rows = []
-    for _, row in data.iterrows():
+    for position, (_, row) in enumerate(data.iterrows()):
         item = {}
         for column in numeric_columns:
             value = row[column]
@@ -209,6 +282,12 @@ def _prepare_numeric_data(df, variable_types, max_points=MAX_NUMERIC_POINTS):
         for column in categorical_columns:
             value = row[column]
             item[str(column)] = ("缺失" if pd.isna(value) else str(value))
+        if time_values is not None:
+            try:
+                time_value = time_values.iloc[position]
+            except (KeyError, IndexError):
+                time_value = None
+            item["__time__"] = (None if time_value is None or pd.isna(time_value) else float(time_value))
         rows.append(item)
     return {"columns": [str(column) for column in numeric_columns], "rows": rows}
 
@@ -796,6 +875,10 @@ def _prepare_analysis_data(
                 time_analysis=time_analysis,
                 time_series=time_series
             ),
+        "time_filter":
+            _prepare_time_filter(df, variable_types),
+        "table_preview":
+            _prepare_table_preview(df),
         "images":
             image_data or {}
     }

@@ -1400,6 +1400,263 @@
             }
         }
 
+
+        /* =====================================================
+           Time range filter (查询筛选功能板块内新增)
+           ===================================================== */
+
+        .time-range-block {
+
+            padding: 14px;
+
+            margin-bottom: 16px;
+
+            border: 1px solid var(--border);
+
+            border-radius: 12px;
+
+            background: var(--surface-soft);
+        }
+
+        .time-range-head {
+
+            display: flex;
+
+            align-items: baseline;
+
+            justify-content: space-between;
+
+            gap: 12px;
+
+            flex-wrap: wrap;
+
+            margin-bottom: 12px;
+        }
+
+        .time-range-title {
+
+            color: var(--text);
+
+            font-size: 14px;
+
+            font-weight: 700;
+        }
+
+        .time-range-hint {
+
+            color: var(--text-soft);
+
+            font-size: 12px;
+        }
+
+        .time-range-controls {
+
+            display: flex;
+
+            flex-wrap: wrap;
+
+            align-items: flex-end;
+
+            gap: 12px;
+        }
+
+        .time-range-controls .control {
+
+            flex-direction: column;
+
+            align-items: flex-start;
+        }
+
+        .time-range-controls input {
+
+            min-width: 190px;
+
+            padding: 9px 12px;
+
+            border: 1px solid var(--border);
+
+            border-radius: 10px;
+
+            background: #ffffff;
+
+            color: var(--text);
+
+            font: inherit;
+
+            outline: none;
+        }
+
+        .time-range-controls input:focus {
+
+            border-color: var(--primary);
+        }
+
+        .time-range-controls button {
+
+            padding: 9px 16px;
+
+            border: 1px solid var(--border);
+
+            border-radius: 10px;
+
+            background: #ffffff;
+
+            color: var(--text);
+
+            cursor: pointer;
+        }
+
+        .time-range-controls button:hover {
+
+            border-color: var(--primary);
+
+            color: var(--primary);
+        }
+
+        .time-range-result {
+
+            display: none;
+
+            margin-top: 10px;
+
+            color: var(--text-soft);
+
+            font-size: 13px;
+        }
+
+
+        /* =====================================================
+           Table preview (数据中的变量板块内新增)
+           ===================================================== */
+
+        .table-preview-card {
+
+            margin-top: 22px;
+        }
+
+        .table-preview-head {
+
+            display: flex;
+
+            align-items: center;
+
+            justify-content: space-between;
+
+            gap: 14px;
+
+            flex-wrap: wrap;
+
+            margin-bottom: 14px;
+        }
+
+        .table-preview-title {
+
+            color: var(--text);
+
+            font-size: 16px;
+
+            font-weight: 700;
+        }
+
+        .table-preview-toggle {
+
+            padding: 9px 16px;
+
+            border: 1px solid var(--border);
+
+            border-radius: 10px;
+
+            background: #ffffff;
+
+            color: var(--text);
+
+            cursor: pointer;
+        }
+
+        .table-preview-toggle:hover,
+        .table-preview-toggle.active {
+
+            border-color: var(--primary);
+
+            background: var(--primary-soft);
+
+            color: var(--primary);
+        }
+
+        .table-preview-scroll {
+
+            overflow-x: auto;
+
+            border: 1px solid var(--border);
+
+            border-radius: 12px;
+        }
+
+        table.table-preview {
+
+            border-collapse: collapse;
+
+            width: 100%;
+
+            font-size: 13px;
+
+            white-space: nowrap;
+        }
+
+        table.table-preview th,
+        table.table-preview td {
+
+            padding: 9px 12px;
+
+            border-bottom: 1px solid var(--border);
+
+            border-right: 1px solid var(--border);
+
+            text-align: left;
+
+            color: var(--text);
+        }
+
+        table.table-preview th {
+
+            background: var(--primary-soft);
+
+            color: var(--primary);
+
+            font-weight: 700;
+
+            position: sticky;
+
+            top: 0;
+        }
+
+        table.table-preview tr:last-child td {
+
+            border-bottom: none;
+        }
+
+        table.table-preview th:last-child,
+        table.table-preview td:last-child {
+
+            border-right: none;
+        }
+
+        table.table-preview td.is-missing {
+
+            color: var(--text-soft);
+
+            font-style: italic;
+        }
+
+        .table-preview-note {
+
+            margin-top: 10px;
+
+            color: var(--text-soft);
+
+            font-size: 12px;
+        }
+
     </style>
 
 </head>
@@ -1652,6 +1909,39 @@
 
         </div>
 
+
+        <div class="card table-preview-card" id="tablePreviewCard" style="display:none;">
+
+            <div class="table-preview-head">
+
+                <div class="table-preview-title">
+                    数据表预览
+                </div>
+
+                <button
+                    id="toggleTablePreviewButton"
+                    type="button"
+                    class="table-preview-toggle"
+                >
+                    查看前 10 行数据
+                </button>
+
+            </div>
+
+            <div class="table-preview-body" id="tablePreviewBody" style="display:none;">
+
+                <div class="table-preview-scroll">
+
+                    <table class="table-preview" id="tablePreviewTable"></table>
+
+                </div>
+
+                <div class="table-preview-note" id="tablePreviewNote"></div>
+
+            </div>
+
+        </div>
+
     </div>
 
 </section>
@@ -1744,6 +2034,30 @@
                 <button id="clearVariableFilterButton" type="button">清除筛选</button>
             </div>
             <div id="variableFilterResult" class="chart-message" style="display:none; min-height: 60px; padding: 12px;" aria-live="polite"></div>
+
+            <div class="time-range-block" id="timeRangeFilter" style="display:none;">
+                <div class="time-range-head">
+                    <span class="time-range-title">时间范围筛选</span>
+                    <span class="time-range-hint" id="timeRangeHint"></span>
+                </div>
+                <div class="time-range-controls">
+                    <div class="control">
+                        <label for="timeRangeStart">起始时间</label>
+                        <input id="timeRangeStart" type="text" autocomplete="off">
+                    </div>
+                    <div class="control">
+                        <label for="timeRangeEnd">结束时间</label>
+                        <input id="timeRangeEnd" type="text" autocomplete="off">
+                    </div>
+                    <div class="control">
+                        <button id="applyTimeRangeButton" type="button">应用时间范围</button>
+                    </div>
+                    <div class="control">
+                        <button id="clearTimeRangeButton" type="button">清除时间范围</button>
+                    </div>
+                </div>
+                <div class="time-range-result" id="timeRangeResult" aria-live="polite"></div>
+            </div>
         </div>
 
 
@@ -2623,6 +2937,72 @@
 
 
     /* ========================================================
+       Table preview (数据中的变量板块内新增)
+       ======================================================== */
+
+    function initializeTablePreview() {
+        const card = document.getElementById("tablePreviewCard");
+        const button = document.getElementById("toggleTablePreviewButton");
+        const body = document.getElementById("tablePreviewBody");
+        const table = document.getElementById("tablePreviewTable");
+        const note = document.getElementById("tablePreviewNote");
+        if (!card || !button || !body || !table) return;
+
+        const preview = dashboard?.table_preview || {};
+        const columns = Array.isArray(preview.columns) ? preview.columns : [];
+        const rows = Array.isArray(preview.rows) ? preview.rows : [];
+        if (!columns.length || !rows.length) return;
+
+        const head = document.createElement("thead");
+        const headRow = document.createElement("tr");
+        columns.forEach(function (column) {
+            const th = document.createElement("th");
+            th.textContent = String(column);
+            th.title = String(column);
+            headRow.appendChild(th);
+        });
+        head.appendChild(headRow);
+
+        const tbody = document.createElement("tbody");
+        rows.forEach(function (row) {
+            const tr = document.createElement("tr");
+            columns.forEach(function (column, index) {
+                const td = document.createElement("td");
+                const value = Array.isArray(row) ? row[index] : undefined;
+                if (value === null || value === undefined) {
+                    td.textContent = "缺失";
+                    td.classList.add("is-missing");
+                } else {
+                    td.textContent = String(value);
+                }
+                tr.appendChild(td);
+            });
+            tbody.appendChild(tr);
+        });
+
+        table.innerHTML = "";
+        table.appendChild(head);
+        table.appendChild(tbody);
+
+        if (note) {
+            note.textContent = "当前显示前 " + rows.length + " 行、共 " + columns.length +
+                " 个变量；完整数据请查看原始 CSV 文件。";
+        }
+
+        let expanded = false;
+        button.addEventListener("click", function () {
+            expanded = !expanded;
+            body.style.display = expanded ? "" : "none";
+            button.textContent = expanded ? "收起数据表" : "查看前 10 行数据";
+            if (expanded) button.classList.add("active");
+            else button.classList.remove("active");
+        });
+
+        card.style.display = "";
+    }
+
+
+    /* ========================================================
        Identifier query
        ======================================================== */
 
@@ -2977,6 +3357,7 @@
     let activeIdentifierRowsCache = null;
     let activeVariableFilters = [];
     let activeVariableRowsCache = null;
+    let activeTimeRange = null;
 
     function setIdentifierFilter(filter) {
         activeIdentifierFilter = filter && Object.keys(filter).length ? filter : null;
@@ -3014,9 +3395,9 @@
 
     function getFilteredChartRows() {
         const baseRows = getActiveChartRows();
-        if (!activeVariableFilters.length) return baseRows;
+        if (!activeVariableFilters.length && !activeTimeRange) return baseRows;
         if (activeVariableRowsCache) return activeVariableRowsCache;
-        activeVariableRowsCache = applyVariableFilters(baseRows);
+        activeVariableRowsCache = applyRowFilters(baseRows);
         return activeVariableRowsCache;
     }
 
@@ -3027,6 +3408,179 @@
 
     function getFilterData() {
         return dashboard.statistics || {};
+    }
+
+
+    /* ========================================================
+       Time range filter (查询筛选功能板块内新增)
+       ======================================================== */
+
+    function getTimeFilterInfo() {
+        const info = dashboard?.time_filter || {};
+        if (!info.available || !info.time_column || !info.time_type) {
+            return { available: false };
+        }
+        return {
+            available: true,
+            time_type: info.time_type,
+            time_column: info.time_column,
+            min: (info.min === undefined ? null : info.min),
+            max: (info.max === undefined ? null : info.max)
+        };
+    }
+
+    // 与后端保持一致：把“无时区”的时间按 UTC 解释，避免本地时区造成偏移。
+    function parseNaiveDateTime(value) {
+        if (value === null || value === undefined || value === "") return null;
+        const text = String(value).trim().replace(" ", "T");
+        const match = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+        if (!match) {
+            const fallback = Date.parse(text);
+            return Number.isFinite(fallback) ? fallback : null;
+        }
+        return Date.UTC(
+            Number(match[1]),
+            Number(match[2]) - 1,
+            Number(match[3]),
+            Number(match[4] || 0),
+            Number(match[5] || 0),
+            Number(match[6] || 0)
+        );
+    }
+
+    function parseTimeInputValue(value, timeType) {
+        if (value === null || value === undefined || value === "") return null;
+        if (timeType === "time_index") {
+            const numeric = Number(value);
+            return Number.isFinite(numeric) ? numeric : null;
+        }
+        return parseNaiveDateTime(value);
+    }
+
+    function formatTimeValue(value, timeType) {
+        if (value === null || value === undefined || !Number.isFinite(Number(value))) return "—";
+        if (timeType === "time_index") return formatNumber(value);
+        const date = new Date(Number(value));
+        const pad = function (number) { return String(number).padStart(2, "0"); };
+        return date.getUTCFullYear() + "-" + pad(date.getUTCMonth() + 1) + "-" + pad(date.getUTCDate()) +
+            " " + pad(date.getUTCHours()) + ":" + pad(date.getUTCMinutes());
+    }
+
+    function getRowTimeValue(row) {
+        if (!row) return null;
+        if (row.__time__ !== undefined && row.__time__ !== null && Number.isFinite(Number(row.__time__))) {
+            return Number(row.__time__);
+        }
+        if (row.time_index !== undefined && row.time_index !== null && Number.isFinite(Number(row.time_index))) {
+            return Number(row.time_index);
+        }
+        if (row.datetime !== undefined && row.datetime !== null && row.datetime !== "") {
+            const parsed = parseNaiveDateTime(row.datetime);
+            if (parsed !== null) return parsed;
+        }
+        const info = getTimeFilterInfo();
+        if (info.available && info.time_column && row[info.time_column] !== undefined && row[info.time_column] !== null) {
+            const raw = row[info.time_column];
+            if (info.time_type === "time_index") {
+                const numeric = Number(raw);
+                return Number.isFinite(numeric) ? numeric : null;
+            }
+            return parseNaiveDateTime(raw);
+        }
+        return null;
+    }
+
+    function applyTimeRangeFilter(rows) {
+        if (!activeTimeRange) return rows;
+        const min = activeTimeRange.min;
+        const max = activeTimeRange.max;
+        return rows.filter(function (row) {
+            const value = getRowTimeValue(row);
+            if (value === null || !Number.isFinite(value)) return false;
+            if (min !== null && value < min) return false;
+            if (max !== null && value > max) return false;
+            return true;
+        });
+    }
+
+    function applyRowFilters(rows) {
+        let filtered = rows;
+        if (activeVariableFilters.length) filtered = applyVariableFilters(filtered);
+        if (activeTimeRange) filtered = applyTimeRangeFilter(filtered);
+        return filtered;
+    }
+
+    function getTimeRangeLabel() {
+        if (!activeTimeRange) return "";
+        const info = getTimeFilterInfo();
+        const timeType = info.available ? info.time_type : "datetime";
+        const start = activeTimeRange.min === null ? "最早" : formatTimeValue(activeTimeRange.min, timeType);
+        const end = activeTimeRange.max === null ? "最晚" : formatTimeValue(activeTimeRange.max, timeType);
+        return (info.available && info.time_column ? info.time_column : "时间") + " ∈ [" + start + ", " + end + "]";
+    }
+
+    function initializeTimeRangeFilter() {
+        const block = document.getElementById("timeRangeFilter");
+        const startInput = document.getElementById("timeRangeStart");
+        const endInput = document.getElementById("timeRangeEnd");
+        const applyButton = document.getElementById("applyTimeRangeButton");
+        const clearButton = document.getElementById("clearTimeRangeButton");
+        const hint = document.getElementById("timeRangeHint");
+        const result = document.getElementById("timeRangeResult");
+        if (!block || !startInput || !endInput || !applyButton || !clearButton) return;
+
+        // 没有可识别的时间变量时，不显示该模块（保持原有界面不变）。
+        const info = getTimeFilterInfo();
+        if (!info.available) return;
+
+        block.style.display = "";
+        const isTimeIndex = info.time_type === "time_index";
+        startInput.type = isTimeIndex ? "number" : "datetime-local";
+        endInput.type = isTimeIndex ? "number" : "datetime-local";
+        if (isTimeIndex) {
+            startInput.placeholder = "起始序号";
+            endInput.placeholder = "结束序号";
+        } else {
+            startInput.placeholder = "YYYY-MM-DD HH:MM";
+            endInput.placeholder = "YYYY-MM-DD HH:MM";
+        }
+        if (hint) {
+            hint.textContent = "时间变量：" + info.time_column + "；数据集范围：" +
+                formatTimeValue(info.min, info.time_type) + " ～ " + formatTimeValue(info.max, info.time_type);
+        }
+
+        function showResult(message, isError) {
+            if (!result) return;
+            result.style.display = "block";
+            result.textContent = message;
+            result.style.color = isError ? "#b91c1c" : "";
+        }
+
+        applyButton.addEventListener("click", function () {
+            const minRaw = startInput.value.trim();
+            const maxRaw = endInput.value.trim();
+            if (!minRaw && !maxRaw) { showResult("请至少填写一个时间边界。", true); return; }
+            const min = parseTimeInputValue(minRaw, info.time_type);
+            const max = parseTimeInputValue(maxRaw, info.time_type);
+            if ((minRaw && min === null) || (maxRaw && max === null)) { showResult("请输入有效的时间。", true); return; }
+            if (min !== null && max !== null && min > max) { showResult("起始时间不能晚于结束时间。", true); return; }
+            activeTimeRange = { min: min, max: max };
+            activeVariableRowsCache = null;
+            updateIdentifierFilterStatus();
+            const rows = getFilteredChartRows();
+            showResult("时间范围已应用，当前交互图表载荷匹配 " + formatNumber(rows.length) + " 条记录。", false);
+            renderInteractiveCharts();
+        });
+
+        clearButton.addEventListener("click", function () {
+            activeTimeRange = null;
+            activeVariableRowsCache = null;
+            startInput.value = "";
+            endInput.value = "";
+            if (result) { result.style.display = "none"; result.textContent = ""; }
+            updateIdentifierFilterStatus();
+            renderInteractiveCharts();
+        });
     }
 
     function initializeVariableFiltering() {
@@ -3313,6 +3867,7 @@
                 labels.push(filter.column + "∈{" + filter.values.join(", ") + "}");
             }
         });
+        if (activeTimeRange) labels.push(getTimeRangeLabel());
         return labels.length ? "（已筛选：" + labels.join("；") + "）" : "";
     }
 
@@ -3328,6 +3883,7 @@
                 labels.push(filter.column + " = " + filter.values.join(" / "));
             }
         });
+        if (activeTimeRange) labels.push(getTimeRangeLabel());
         if (!labels.length) {
             element.textContent = "当前：全局数据";
             element.classList.remove("active");
@@ -3808,7 +4364,7 @@
             columns: identifierTimeData.numeric_columns || []
         } : globalTimeData;
         const baseTimeRows = useIdentifierData ? getActiveChartRows() : (Array.isArray(timeData.rows) ? timeData.rows : []);
-        const rows = applyVariableFilters(baseTimeRows);
+        const rows = applyRowFilters(baseTimeRows);
         const numericColumns = getSelectedNumericColumns();
         const categoryColumn = document.getElementById("categoricalVariable")?.value || "";
         if (!timeData.available || !rows.length || !numericColumns.length) {
@@ -4009,7 +4565,7 @@
             columns: identifierTimeData.numeric_columns || []
         } : globalTimeData;
         const baseTimeRows = useIdentifierData ? getActiveChartRows() : (Array.isArray(timeData.rows) ? timeData.rows : []);
-        const rows = applyVariableFilters(baseTimeRows);
+        const rows = applyRowFilters(baseTimeRows);
         const numericColumns = getSelectedNumericColumns();
         const categoryColumn = document.getElementById("categoricalVariable")?.value || "";
         if (!timeData.available || !rows.length || !numericColumns.length) {
@@ -4134,7 +4690,7 @@
         }
         const selected = document.getElementById("categoricalVariable")?.value || "";
         const data = dashboard.categorical_data || {};
-        if (activeIdentifierFilter || activeVariableFilters.length) {
+        if (activeIdentifierFilter || activeVariableFilters.length || activeTimeRange) {
             const rows = getFilteredChartRows();
             if (!selected || !rows.length || !rows.some(function (row) { return row[selected] !== undefined; })) {
                 showChartMessage("categoryMessage", "当前标识符筛选下没有可展示的分类数据。");
@@ -4933,6 +5489,12 @@
 
 
             safeRun(
+                "Table preview initialization",
+                initializeTablePreview
+            );
+
+
+            safeRun(
                 "Identifier query initialization",
                 initializeIdentifierQuery
             );
@@ -4941,6 +5503,12 @@
             safeRun(
                 "Variable filter initialization",
                 initializeVariableFiltering
+            );
+
+
+            safeRun(
+                "Time range filter initialization",
+                initializeTimeRangeFilter
             );
 
 
