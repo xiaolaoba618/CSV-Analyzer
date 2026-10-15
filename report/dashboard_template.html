@@ -1657,6 +1657,36 @@
             font-size: 12px;
         }
 
+        .data-scope-notice {
+
+            max-width: 1180px;
+
+            margin: 0 auto 10px auto;
+
+            padding: 13px 18px;
+
+            border-radius: 12px;
+
+            font-size: 13px;
+
+            line-height: 1.75;
+
+            border: 1px solid #f3d19c;
+
+            background: #fff7e6;
+
+            color: #8a4b08;
+        }
+
+        .data-scope-notice.is-full {
+
+            border: 1px solid #c7d2fe;
+
+            background: var(--primary-soft);
+
+            color: #3730a3;
+        }
+
     </style>
 
 </head>
@@ -1730,6 +1760,14 @@
     <div class="hero-decoration"></div>
 
 </section>
+
+
+<div
+    class="data-scope-notice"
+    id="dataScopeNotice"
+    style="display:none;"
+    aria-live="polite"
+></div>
 
 
 <!-- =========================================================
@@ -2639,6 +2677,50 @@
             update
         );
 
+    }
+
+
+    /* ========================================================
+       Data scope notice
+       ======================================================== */
+
+    function formatRowCount(value) {
+        return Number(value || 0).toLocaleString("zh-CN");
+    }
+
+    function renderDataScopeNotice() {
+        const element = document.getElementById("dataScopeNotice");
+        if (!element) return;
+        const scope = dashboard.data_scope || {};
+        const sourceRows = Number(scope.source_row_count || 0);
+        if (!sourceRows) {
+            element.style.display = "none";
+            return;
+        }
+        if (scope.export_all_data) {
+            element.style.display = "";
+            element.className = "data-scope-notice is-full";
+            element.textContent =
+                "本次报告已导出全部数据：交互图表使用完整 " +
+                formatRowCount(sourceRows) + " 行，未做抽样。";
+            return;
+        }
+        if (!scope.sampled) {
+            element.style.display = "none";
+            return;
+        }
+        const parts = [];
+        if (scope.numeric_truncated) parts.push("数值分布、变量关系");
+        if (scope.time_truncated) parts.push("时间变化、归一化趋势");
+        const names = parts.length ? parts.join("，") : "部分交互图表";
+        element.style.display = "";
+        element.className = "data-scope-notice";
+        element.textContent =
+            "数据共 " + formatRowCount(sourceRows) + " 行，超过 " +
+            formatRowCount(scope.sample_limit) + " 行上限：" + names +
+            "等交互图表的数据为随机抽取的 " +
+            formatRowCount(scope.numeric_row_count || scope.sample_limit) +
+            " 行，不是全量数据。";
     }
 
 
@@ -5475,6 +5557,12 @@
              * Step 2
              * Render basic page information.
              */
+
+            safeRun(
+                "Data scope notice rendering",
+                renderDataScopeNotice
+            );
+
 
             safeRun(
                 "KPI rendering",

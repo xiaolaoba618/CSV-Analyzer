@@ -241,7 +241,7 @@ def _prepare_table_preview(df, max_rows=10):
         rows.append([_make_json_safe(row[column]) for column in head.columns])
     return {"columns": columns, "rows": rows}
 
-def _prepare_numeric_data(df, variable_types, max_points=MAX_NUMERIC_POINTS):
+def _prepare_numeric_data(df, variable_types, max_points=MAX_NUMERIC_POINTS, full_data=False):
     numeric_columns = [
         column
         for column, info
@@ -249,7 +249,14 @@ def _prepare_numeric_data(df, variable_types, max_points=MAX_NUMERIC_POINTS):
         if (info.get("detected_type") == "numeric" and column in df.columns)
     ]
     if not numeric_columns:
-        return {"columns": [], "rows": []}
+        return {
+            "columns": [],
+            "rows": [],
+            "source_row_count": int(len(df)),
+            "row_count": 0,
+            "truncated": False,
+            "sample_limit": (None if full_data else MAX_NUMERIC_POINTS)
+        }
     categorical_columns = _get_categorical_columns(df, variable_types)
     time_type, time_column = _resolve_time_column(df, variable_types)
     # 保持采样行的分类字段与数值字段对应。
@@ -258,8 +265,15 @@ def _prepare_numeric_data(df, variable_types, max_points=MAX_NUMERIC_POINTS):
     if time_column is not None and time_column not in columns_to_use:
         columns_to_use = columns_to_use + [time_column]
     data = df[columns_to_use].copy()
-    if len(data) > max_points:
+    source_row_count = int(len(data))
+    if full_data or max_points is None:
+        truncated = False
+    elif len(data) > max_points:
+        # 默认路径：超过上限时随机抽样子集，供交互图表使用。
         data = data.sample(n=max_points, random_state=42)
+        truncated = True
+    else:
+        truncated = False
     data = data.replace([np.inf, -np.inf], np.nan)
     time_values = None
     if time_column is not None:
@@ -289,7 +303,14 @@ def _prepare_numeric_data(df, variable_types, max_points=MAX_NUMERIC_POINTS):
                 time_value = None
             item["__time__"] = (None if time_value is None or pd.isna(time_value) else float(time_value))
         rows.append(item)
-    return {"columns": [str(column) for column in numeric_columns], "rows": rows}
+    return {
+        "columns": [str(column) for column in numeric_columns],
+        "rows": rows,
+        "source_row_count": source_row_count,
+        "row_count": int(len(rows)),
+        "truncated": bool(truncated),
+        "sample_limit": (None if full_data else MAX_NUMERIC_POINTS)
+    }
 
 def _get_identifier_columns(df, variable_types, profile=None):
     columns = []
@@ -457,7 +478,7 @@ def _prepare_categorical_data(df, variable_types, max_categories=20):
             continue
     return result
 
-def _prepare_time_data(df, variable_types, max_points=MAX_TIME_POINTS):
+def _prepare_time_data(df, variable_types, max_points=MAX_TIME_POINTS, full_data=False):
     datetime_columns = [
         column
         for column, info in variable_types.items()
@@ -500,9 +521,15 @@ def _prepare_time_data(df, variable_types, max_points=MAX_TIME_POINTS):
                 "rows": []
             }
         data = data.sort_values(time_column)
-        if len(data) > max_points:
+        source_row_count = int(len(data))
+        if full_data or max_points is None:
+            truncated = False
+        elif len(data) > max_points:
             index = np.linspace(0, len(data) - 1, max_points, dtype=int)
             data = data.iloc[index]
+            truncated = True
+        else:
+            truncated = False
         rows = []
         for _, row in data.iterrows():
             item = {"time_index": float(row[time_column])}
@@ -519,7 +546,11 @@ def _prepare_time_data(df, variable_types, max_points=MAX_TIME_POINTS):
             "time_column": str(time_column),
             "datetime_column": None,
             "columns": [str(column) for column in numeric_columns],
-            "rows": rows
+            "rows": rows,
+            "source_row_count": source_row_count,
+            "row_count": int(len(rows)),
+            "truncated": bool(truncated),
+            "sample_limit": (None if full_data else MAX_TIME_POINTS)
         }
     if not datetime_columns:
         return {"available": False, "time_type": None, "time_column": None, "datetime_column": None, "columns": [], "rows": []}
@@ -551,9 +582,15 @@ def _prepare_time_data(df, variable_types, max_points=MAX_TIME_POINTS):
             "rows": []
         }
     data = data.sort_values(datetime_column)
-    if len(data) > max_points:
+    source_row_count = int(len(data))
+    if full_data or max_points is None:
+        truncated = False
+    elif len(data) > max_points:
         index = np.linspace(0, len(data) - 1, max_points, dtype=int)
         data = data.iloc[index]
+        truncated = True
+    else:
+        truncated = False
     rows = []
     for _, row in data.iterrows():
         item = {"datetime": row[datetime_column].isoformat()}
@@ -576,7 +613,11 @@ def _prepare_time_data(df, variable_types, max_points=MAX_TIME_POINTS):
         "time_column": str(datetime_column),
         "datetime_column": str(datetime_column),
         "columns": [str(column) for column in numeric_columns],
-        "rows": rows
+        "rows": rows,
+        "source_row_count": source_row_count,
+        "row_count": int(len(rows)),
+        "truncated": bool(truncated),
+        "sample_limit": (None if full_data else MAX_TIME_POINTS)
     }
 
 def _get_numeric_columns(df, variable_types):
@@ -586,7 +627,7 @@ def _get_categorical_columns(df, variable_types):
     categorical_types = {"categorical", "categorical_numeric", "binary", "boolean"}
     return [column for column, info in variable_types.items() if (info.get("detected_type") in categorical_types and column in df.columns)]
 
-def _prepare_histogram_data(df, numeric_columns, bins=30, max_points=MAX_HISTOGRAM_POINTS):
+def _prepare_histogram_data(df, numeric_columns, bins=30, max_points=MAX_HISTOGRAM_POINTS, full_data=False):
     result = {}
     for column in numeric_columns:
         try:
@@ -594,7 +635,7 @@ def _prepare_histogram_data(df, numeric_columns, bins=30, max_points=MAX_HISTOGR
             series = (series.replace([np.inf, -np.inf], np.nan).dropna())
             if len(series) == 0:
                 continue
-            if len(series) > max_points:
+            if not full_data and max_points is not None and len(series) > max_points:
                 series = series.sample(n=max_points, random_state=42)
             if series.nunique() <= 1:
                 continue
@@ -617,7 +658,7 @@ def _prepare_histogram_data(df, numeric_columns, bins=30, max_points=MAX_HISTOGR
             continue
     return result
 
-def _prepare_boxplot_data(df, numeric_columns):
+def _prepare_boxplot_data(df, numeric_columns, full_data=False):
     result = {}
     for column in numeric_columns:
         try:
@@ -638,7 +679,7 @@ def _prepare_boxplot_data(df, numeric_columns):
             lower = (float(lower_values.min()) if len(lower_values) > 0 else float(series.min()))
             upper = (float(upper_values.max()) if len(upper_values) > 0 else float(series.max()))
             outliers = series[(series < lower_fence) | (series > upper_fence)]
-            if len(outliers) > MAX_BOX_OUTLIERS:
+            if not full_data and len(outliers) > MAX_BOX_OUTLIERS:
                 outliers = outliers.sample(n=MAX_BOX_OUTLIERS, random_state=42)
             result[str(column)] = {
                 "min":
@@ -804,14 +845,14 @@ def _prepare_time_series_chart_data(time_series):
             result[str(column)] = {"frequency": str(frequency), "data": data}
     return result
 
-def _prepare_dashboard_visualizations(df, variable_types, correlation=None, time_analysis=None, time_series=None):
+def _prepare_dashboard_visualizations(df, variable_types, correlation=None, time_analysis=None, time_series=None, full_data=False):
     numeric_columns = _get_numeric_columns(df, variable_types)
     categorical_columns = _get_categorical_columns(df, variable_types)
     return {
         "histograms":
-            _prepare_histogram_data(df, numeric_columns),
+            _prepare_histogram_data(df, numeric_columns, full_data=full_data),
         "boxplots":
-            _prepare_boxplot_data(df, numeric_columns),
+            _prepare_boxplot_data(df, numeric_columns, full_data=full_data),
         "categorical_bars":
             _prepare_categorical_chart_data(df, categorical_columns),
         "scatter_plots":
@@ -833,18 +874,21 @@ def _prepare_analysis_data(
     time_analysis=None,
     time_series=None,
     correlation=None,
-    image_data=None
+    image_data=None,
+    export_all_data=False
 ):
     variable_types = {}
     if profile:
         variable_types = profile.get("variable_types", {})
+    numeric_payload = _prepare_numeric_data(df, variable_types, full_data=export_all_data)
+    time_payload = _prepare_time_data(df, variable_types, full_data=export_all_data)
     return {
         "dataset":
             _prepare_dataset_summary(df),
         "variables":
             _prepare_variable_summary(df, variable_types),
         "numeric_data":
-            _prepare_numeric_data(df, variable_types),
+            numeric_payload,
         "categorical_data":
             _prepare_categorical_data(df, variable_types),
         "identifier_data":
@@ -854,7 +898,7 @@ def _prepare_analysis_data(
         "identifier_chart_data":
             _prepare_identifier_chart_data(df, variable_types, profile),
         "time_data":
-            _prepare_time_data(df, variable_types),
+            time_payload,
         "statistics":
             statistics or {},
         "quality":
@@ -873,8 +917,23 @@ def _prepare_analysis_data(
                 variable_types=variable_types,
                 correlation=correlation,
                 time_analysis=time_analysis,
-                time_series=time_series
+                time_series=time_series,
+                full_data=export_all_data
             ),
+        "data_scope":
+            {
+                "export_all_data": bool(export_all_data),
+                "source_row_count": int(len(df)),
+                "sample_limit": (None if export_all_data else MAX_NUMERIC_POINTS),
+                "numeric_truncated": bool(numeric_payload.get("truncated")),
+                "numeric_row_count": int(numeric_payload.get("row_count") or 0),
+                "time_truncated": bool(time_payload.get("truncated")),
+                "time_row_count": int(time_payload.get("row_count") or 0),
+                "sampled": bool(
+                    not export_all_data
+                    and (numeric_payload.get("truncated") or time_payload.get("truncated"))
+                )
+            },
         "time_filter":
             _prepare_time_filter(df, variable_types),
         "table_preview":
@@ -903,9 +962,13 @@ def generate_dashboard(
     visualizations=None,
     output_path="output/dashboard.html",
     template_path="report/dashboard_template.html",
-    title="Interactive Data Dashboard"
+    title="Interactive Data Dashboard",
+    export_all_data=False
 ):
-    """生成独立的交互式 HTML Dashboard。"""
+    """生成独立的交互式 HTML Dashboard。
+
+    export_all_data=True 时，交互式图表使用完整数据，不再按 5000 行等上限抽样。
+    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     template = _load_template(template_path)
@@ -919,7 +982,8 @@ def generate_dashboard(
         time_analysis=time_analysis,
         time_series=time_series,
         correlation=correlation,
-        image_data=image_data
+        image_data=image_data,
+        export_all_data=export_all_data
     )
     html_content = template.replace("{{TITLE}}", html.escape(str(title)))
     dashboard_json = _to_json(dashboard_data)
@@ -927,3 +991,73 @@ def generate_dashboard(
     html_content = html_content.replace("{{TITLE}}", html.escape(str(title)))
     output_path.write_text(html_content, encoding="utf-8")
     return output_path
+
+
+ESTIMATE_SAMPLE_ROWS = 400
+# 与行数无关的固定开销：模板 + 静态图片 base64 + 统计量 + 聚合图，按实测校准。
+ESTIMATE_FIXED_BYTES = 2_400_000
+# json.dumps 粗测字节数 -> 落盘后实际字节数的折算比，按实测校准。
+ESTIMATE_SERIALIZE_RATIO = 0.88
+# 时间序列区块始终按全量行数嵌入，每个数值变量每行的开销，按实测校准。
+ESTIMATE_TIMESERIES_BYTES_PER_ROW_PER_COLUMN = 100
+# 标识符联动数据同样按全量行数嵌入，每行的开销，按实测校准。
+ESTIMATE_IDENTIFIER_BYTES_PER_ROW = 35
+
+
+def estimate_dashboard_size(df, variable_types=None, export_all_data=False, total_rows=None):
+    """估算生成的 dashboard.html 体积（字节），仅用于界面提示。
+
+    体积由三部分构成：
+      1. 固定开销：模板、静态图片 base64、统计量与聚合图；
+      2. 始终全量嵌入的区块（时间序列、标识符联动），随总行数线性增长；
+      3. 受抽样影响的交互明细（数值分布、时间变化），随参与图表的数据行数增长。
+
+    属于量级预估（实测误差约 ±10%），不是精确值。
+    """
+    if df is None or getattr(df, "empty", True):
+        return 0
+    variable_types = variable_types or {}
+    if total_rows is None:
+        total_rows = int(len(df))
+    total_rows = int(total_rows)
+    if total_rows <= 0:
+        return 0
+    sample = df.head(min(ESTIMATE_SAMPLE_ROWS, int(len(df))))
+    numeric_rows = _prepare_numeric_data(sample, variable_types, full_data=True).get("rows") or []
+    per_row = 0.0
+    if numeric_rows:
+        numeric_bytes = len(json.dumps(numeric_rows, ensure_ascii=False).encode("utf-8"))
+        per_row = numeric_bytes / len(numeric_rows)
+        time_rows = _prepare_time_data(sample, variable_types, full_data=True).get("rows") or []
+        if time_rows:
+            time_bytes = len(json.dumps(time_rows, ensure_ascii=False).encode("utf-8"))
+            per_row += time_bytes / len(time_rows)
+    per_row *= ESTIMATE_SERIALIZE_RATIO
+    numeric_count = len(_get_numeric_columns(sample, variable_types))
+    has_time_column = any(
+        info.get("detected_type") in ("datetime", "time_index")
+        for info in variable_types.values()
+    )
+    background_per_row = ESTIMATE_IDENTIFIER_BYTES_PER_ROW
+    if has_time_column and numeric_count:
+        background_per_row += (
+            ESTIMATE_TIMESERIES_BYTES_PER_ROW_PER_COLUMN * numeric_count
+        )
+    used_rows = total_rows if export_all_data else min(total_rows, MAX_NUMERIC_POINTS)
+    return int(
+        ESTIMATE_FIXED_BYTES
+        + background_per_row * total_rows
+        + per_row * used_rows
+    )
+
+
+def format_size(bytes_value):
+    """把字节数格式化为便于阅读的文本。"""
+    size = float(bytes_value or 0)
+    if size >= 1024 * 1024 * 1024:
+        return f"{size / (1024 * 1024 * 1024):.2f} GB"
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.0f} KB"
+    return f"{size:.0f} B"

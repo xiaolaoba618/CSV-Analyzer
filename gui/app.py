@@ -1,4 +1,5 @@
 import sys
+import csv
 import subprocess
 from pathlib import Path
 import matplotlib
@@ -9,6 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from PySide6.QtCore import (Qt, Signal, QObject, QThread,)
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFileDialog,
     QFrame,
     QLabel,
@@ -26,8 +28,28 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
 )
 from analyzer import analyze_csv
-from tools.data_loader import load_csv_preview
+from report.dashboard_generator import (
+    MAX_NUMERIC_POINTS,
+    estimate_dashboard_size,
+    format_size,
+)
+from tools.data_loader import load_csv_preview, SUPPORTED_ENCODINGS
 from tools.data_profiler import analyze_profile
+
+def count_csv_rows(path):
+    """快速统计 CSV 的数据行数（不含表头），用于体积预估。"""
+    for encoding in SUPPORTED_ENCODINGS:
+        try:
+            with open(path, "r", encoding=encoding, newline="") as handle:
+                reader = csv.reader(handle)
+                try:
+                    next(reader)
+                except StopIteration:
+                    return 0
+                return sum(1 for _ in reader)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return 0
 
 class DropArea(QFrame):
     """CSV 文件拖放区域。"""
@@ -69,11 +91,12 @@ class AnalysisWorker(QObject):
     finished = Signal(object)
     error = Signal(str)
     progress = Signal(str, int)
-    def __init__(self, input_file, output_dir, variable_type_overrides=None):
+    def __init__(self, input_file, output_dir, variable_type_overrides=None, export_all_data=False):
         super().__init__()
         self.input_file = Path(input_file)
         self.output_dir = Path(output_dir)
         self.variable_type_overrides = (variable_type_overrides or {})
+        self.export_all_data = bool(export_all_data)
     def report_progress(self, message, percentage):
         self.progress.emit(message, percentage)
     def run(self):
@@ -82,7 +105,8 @@ class AnalysisWorker(QObject):
                 input_file=self.input_file,
                 output_dir=self.output_dir,
                 progress_callback=self.report_progress,
-                variable_type_overrides=(self.variable_type_overrides)
+                variable_type_overrides=(self.variable_type_overrides),
+                export_all_data=self.export_all_data
             )
             self.finished.emit(result)
         except Exception as error:
@@ -159,6 +183,9 @@ class CSVAnalyzerGUI(QWidget):
     def __init__(self):
         super().__init__()
         self.input_file = None
+        self.input_row_count = 0
+        self.preview_frame = None
+        self.preview_variable_types = {}
         self.variable_type_overrides = {}
         self.output_dir = (PROJECT_ROOT / "output")
         self.analysis_thread = None
@@ -211,6 +238,17 @@ class CSVAnalyzerGUI(QWidget):
         self.selected_file_label.setAlignment(Qt.AlignCenter)
         self.selected_file_label.setWordWrap(True)
         main_layout.addWidget(self.selected_file_label)
+        self.export_all_checkbox = QCheckBox("导出全部数据到交互式报告")
+        self.export_all_checkbox.setObjectName("exportAllCheckbox")
+        self.export_all_checkbox.setChecked(False)
+        self.export_all_checkbox.setEnabled(False)
+        self.export_all_checkbox.stateChanged.connect(self.update_export_hint)
+        main_layout.addWidget(self.export_all_checkbox)
+        self.export_hint_label = QLabel("尚未选择文件")
+        self.export_hint_label.setObjectName("exportHint")
+        self.export_hint_label.setWordWrap(True)
+        self.export_hint_label.setAlignment(Qt.AlignLeft)
+        main_layout.addWidget(self.export_hint_label)
         self.analyze_button = QPushButton("开始分析")
         self.analyze_button.setObjectName("analyzeButton")
         self.analyze_button.setEnabled(False)
@@ -287,6 +325,25 @@ class CSVAnalyzerGUI(QWidget):
             QLabel#selectedFile {
                 color: #4f46e5;
                 font-size: 13px;
+            }
+
+            QCheckBox#exportAllCheckbox {
+                font-size: 14px;
+                padding: 2px 0;
+            }
+
+            QCheckBox#exportAllCheckbox::indicator {
+                width: 16px;
+                height: 16px;
+            }
+
+            QLabel#exportHint {
+                font-size: 13px;
+                padding: 10px 12px;
+                border-radius: 8px;
+                background: #f1f3f5;
+                border: 1px solid #e3e6ea;
+                color: #555b66;
             }
 
             QPushButton {
@@ -367,6 +424,12 @@ class CSVAnalyzerGUI(QWidget):
         dialog.exec()
         self.variable_type_overrides = dialog.get_overrides()
         self.input_file = path
+        self.preview_frame = preview_df
+        self.preview_variable_types = preview_profile.get("variable_types", {})
+        try:
+            self.input_row_count = count_csv_rows(path)
+        except Exception:
+            self.input_row_count = int(len(preview_df))
         self.selected_file_label.setText(
             f"已选择：{path}"
         )
@@ -375,6 +438,64 @@ class CSVAnalyzerGUI(QWidget):
         self.dashboard_button.setEnabled(False)
         self.report_button.setEnabled(False)
         self.status_label.setText("文件已准备好，可以开始分析。")
+        self.update_export_hint()
+    def update_export_hint(self):
+        """根据数据行数与勾选状态，更新“导出全部数据”下方的说明与体积预估。"""
+        neutral_style = (
+            "font-size: 13px; padding: 10px 12px; border-radius: 8px; "
+            "background: #f1f3f5; border: 1px solid #e3e6ea; color: #555b66;"
+        )
+        notice_style = (
+            "font-size: 13px; padding: 10px 12px; border-radius: 8px; "
+            "background: #fff7e6; border: 1px solid #f3d19c; color: #8a4b08;"
+        )
+        warning_style = (
+            "font-size: 13px; padding: 10px 12px; border-radius: 8px; "
+            "background: #fdecea; border: 1px solid #f5c6c2; color: #8a2b22;"
+        )
+        if self.input_file is None:
+            self.export_all_checkbox.setEnabled(False)
+            self.export_hint_label.setText("尚未选择文件")
+            self.export_hint_label.setStyleSheet(neutral_style)
+            return
+        self.export_all_checkbox.setEnabled(True)
+        rows = int(self.input_row_count or 0)
+        try:
+            sampled_size = estimate_dashboard_size(
+                self.preview_frame,
+                self.preview_variable_types,
+                export_all_data=False,
+                total_rows=rows
+            )
+            full_size = estimate_dashboard_size(
+                self.preview_frame,
+                self.preview_variable_types,
+                export_all_data=True,
+                total_rows=rows
+            )
+        except Exception:
+            sampled_size = 0
+            full_size = 0
+        if rows <= MAX_NUMERIC_POINTS:
+            self.export_hint_label.setStyleSheet(neutral_style)
+            self.export_hint_label.setText(
+                f"数据量 {rows:,} 行，未超过 {MAX_NUMERIC_POINTS:,} 行抽样上限，"
+                f"勾选与否结果一致。报告体积预计约 {format_size(full_size)}。"
+            )
+            return
+        if self.export_all_checkbox.isChecked():
+            self.export_hint_label.setStyleSheet(warning_style)
+            self.export_hint_label.setText(
+                f"已勾选：数值分布、变量关系、时间变化等交互图表将使用全部 {rows:,} 行数据。"
+                f"报告体积预计约 {format_size(full_size)}（不勾选约 {format_size(sampled_size)}），"
+                f"文件会明显变大，打开和筛选的性能开销也会增加。"
+            )
+            return
+        self.export_hint_label.setStyleSheet(notice_style)
+        self.export_hint_label.setText(
+            f"未勾选：上述交互图表将随机抽样 {MAX_NUMERIC_POINTS:,} 行（共 {rows:,} 行）。"
+            f"报告体积预计约 {format_size(sampled_size)}（全量约 {format_size(full_size)}）。"
+        )
     def start_analysis(self):
         if self.input_file is None:
             return
@@ -382,6 +503,7 @@ class CSVAnalyzerGUI(QWidget):
             return
         self.analyze_button.setEnabled(False)
         self.select_button.setEnabled(False)
+        self.export_all_checkbox.setEnabled(False)
         self.dashboard_button.setEnabled(False)
         self.report_button.setEnabled(False)
         self.status_label.setText("正在准备分析...")
@@ -392,7 +514,8 @@ class CSVAnalyzerGUI(QWidget):
         self.analysis_worker = AnalysisWorker(
             input_file=self.input_file,
             output_dir=self.output_dir,
-            variable_type_overrides=self.variable_type_overrides
+            variable_type_overrides=self.variable_type_overrides,
+            export_all_data=self.export_all_checkbox.isChecked()
         )
         self.analysis_worker.moveToThread(self.analysis_thread)
         self.analysis_thread.started.connect(self.analysis_worker.run)
@@ -425,6 +548,7 @@ class CSVAnalyzerGUI(QWidget):
         self.progress_bar.setVisible(False)
         self.analyze_button.setEnabled(self.input_file is not None)
         self.select_button.setEnabled(True)
+        self.export_all_checkbox.setEnabled(self.input_file is not None)
         self.analysis_worker = None
         self.analysis_thread = None
     def open_dashboard(self):

@@ -14,8 +14,11 @@ from report.dashboard_generator import generate_dashboard
 from analysis_result import (build_analysis_result)
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-def analyze_csv(input_file, output_dir="output", progress_callback=None, variable_type_overrides=None):
-    """执行完整的 CSV 分析流程。"""
+def analyze_csv(input_file, output_dir="output", progress_callback=None, variable_type_overrides=None, export_all_data=False):
+    """执行完整的 CSV 分析流程。
+
+    export_all_data=True 时交互式 Dashboard 的图表使用完整数据，不再按 5000 行抽样。
+    """
     def report_progress(message, percentage):
         if progress_callback is not None:
             progress_callback(message, percentage)
@@ -144,7 +147,10 @@ def analyze_csv(input_file, output_dir="output", progress_callback=None, variabl
         output_path=report_path
     )
     report_progress("静态分析报告生成完成", 95)
-    report_progress("正在生成交互式 Dashboard...", 96)
+    if export_all_data:
+        report_progress("正在生成交互式 Dashboard（导出全部数据，可能较慢）...", 96)
+    else:
+        report_progress("正在生成交互式 Dashboard...", 96)
     print("Generating interactive dashboard...")
     dashboard_path = (output_dir / "dashboard.html")
     generate_dashboard(
@@ -159,7 +165,8 @@ def analyze_csv(input_file, output_dir="output", progress_callback=None, variabl
         visualizations=visualizations,
         output_path=dashboard_path,
         template_path=(PROJECT_ROOT / "report" / "dashboard_template.html"),
-        title="交互式数据分析报告"
+        title="交互式数据分析报告",
+        export_all_data=export_all_data
     )
     report_progress("交互式 Dashboard 生成完成", 99)
     result = build_analysis_result(
