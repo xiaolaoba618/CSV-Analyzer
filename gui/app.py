@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QVBoxLayout,
@@ -33,11 +34,12 @@ from analyzer import analyze_csv
 from report.dashboard_generator import (
     MAX_NUMERIC_POINTS,
     MAX_SCATTER_POINTS,
-    estimate_dashboard_size,
-    format_size,
+    estimate_dashboard_size_range,
+    format_size_range,
+    measure_payload_costs,
 )
 from tools.data_loader import load_csv_preview, SUPPORTED_ENCODINGS
-from tools.data_profiler import analyze_profile
+from tools.data_profiler import analyze_profile, apply_variable_type_overrides
 
 def count_csv_rows(path):
     """快速统计 CSV 的数据行数（不含表头），用于体积预估。"""
@@ -56,7 +58,7 @@ def count_csv_rows(path):
 
 EXPORT_ALL_TIP = (
     "<b>导出全部数据 —— 影响范围</b><br><br>"
-    "报告里的图表数据分两类，本选项只影响第一类：<br><br>"
+    "报告里的数据分四类，本选项只影响第一类：<br><br>"
     "<b>1. 行级明细（受本选项控制）</b><br>"
     f"• 未勾选：数值分布、变量关系、时间变化等图表只用随机抽取的 {MAX_NUMERIC_POINTS:,} 行<br>"
     "• 勾选后：放开到全部数据行<br>"
@@ -67,8 +69,22 @@ EXPORT_ALL_TIP = (
     "不是原始行。<br>"
     "多主体数据（如 500 只股票 × 698 个交易日 = 34 万行）会被压成一条均值曲线，"
     "单只股票的历史无法从中还原；时间桶按自然日补齐，非交易日为空。<br><br>"
-    "<b>3. 恒为全量</b><br>"
-    "KPI、缺失率、相关系数等统计量始终基于完整数据计算，与勾选无关。"
+    "<b>3. 标识符：单个对象的完整原始序列</b><br>"
+    "若某个变量被指定为「标识符」（如股票代码、用户 ID、设备号），报告会为该列保留"
+    "<b>与勾选无关的全量明细</b>（上限 200 万行），并支持在报告中按<b>单个标识符</b>筛选，"
+    "呈现该对象完整、未抽样的原始时间序列。<br>"
+    "因此主体维度的数据（例如只想看某一只股票的历史走势）不依赖本选项。<br><br>"
+    "<b>4. 恒为全量</b><br>"
+    "KPI、缺失率、相关系数等统计量始终基于完整数据计算，与勾选无关。<br><br>"
+    "<b>关于体积</b><br>"
+    "下方体积是量级估算区间，不是精确值：静态图片的大小会随数据形态浮动数倍，"
+    "实际结果可能落在区间内的任意位置。"
+)
+
+EXPORT_ALL_ADVICE = (
+    "通常不必勾选：只看总体分布、趋势、相关性时抽样已足够；"
+    "单个对象的完整序列请改用「标识符」筛选。\n"
+    "必须勾选：需要在报告里逐行查看或保留全部原始明细。"
 )
 
 
@@ -270,6 +286,7 @@ class CSVAnalyzerGUI(QWidget):
         self.input_row_count = 0
         self.preview_frame = None
         self.preview_variable_types = {}
+        self.preview_identifier_columns = []
         self.variable_type_overrides = {}
         self.output_dir = (PROJECT_ROOT / "output")
         self.analysis_thread = None
@@ -322,6 +339,22 @@ class CSVAnalyzerGUI(QWidget):
         self.selected_file_label.setAlignment(Qt.AlignCenter)
         self.selected_file_label.setWordWrap(True)
         main_layout.addWidget(self.selected_file_label)
+        output_row = QWidget()
+        output_row_layout = QHBoxLayout(output_row)
+        output_row_layout.setContentsMargins(0, 0, 0, 0)
+        output_row_layout.setSpacing(8)
+        output_caption = QLabel("报告导出目录")
+        output_caption.setObjectName("outputCaption")
+        output_row_layout.addWidget(output_caption)
+        self.output_dir_edit = QLineEdit(str(self.output_dir))
+        self.output_dir_edit.setReadOnly(True)
+        self.output_dir_edit.setObjectName("outputDirEdit")
+        self.output_dir_edit.setToolTip(str(self.output_dir))
+        output_row_layout.addWidget(self.output_dir_edit, 1)
+        self.output_dir_button = QPushButton("选择目录")
+        self.output_dir_button.clicked.connect(self.select_output_dir)
+        output_row_layout.addWidget(self.output_dir_button)
+        main_layout.addWidget(output_row)
         export_row = QWidget()
         export_row_layout = QHBoxLayout(export_row)
         export_row_layout.setContentsMargins(0, 0, 0, 0)
@@ -337,6 +370,11 @@ class CSVAnalyzerGUI(QWidget):
         export_row_layout.addWidget(self.export_info_badge)
         export_row_layout.addStretch(1)
         main_layout.addWidget(export_row)
+        self.export_advice_label = QLabel(EXPORT_ALL_ADVICE)
+        self.export_advice_label.setObjectName("exportAdvice")
+        self.export_advice_label.setWordWrap(True)
+        self.export_advice_label.setAlignment(Qt.AlignLeft)
+        main_layout.addWidget(self.export_advice_label)
         self.export_hint_label = QLabel("尚未选择文件")
         self.export_hint_label.setObjectName("exportHint")
         self.export_hint_label.setWordWrap(True)
@@ -420,6 +458,26 @@ class CSVAnalyzerGUI(QWidget):
                 font-size: 13px;
             }
 
+            QLabel#outputCaption {
+                color: #555b66;
+                font-size: 13px;
+            }
+
+            QLineEdit#outputDirEdit {
+                background: white;
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                padding: 7px 10px;
+                color: #6b7280;
+                font-size: 12px;
+            }
+
+            QLabel#exportAdvice {
+                font-size: 12px;
+                color: #6b7280;
+                padding: 0 2px 2px 2px;
+            }
+
             QCheckBox#exportAllCheckbox {
                 font-size: 14px;
                 padding: 2px 0;
@@ -496,6 +554,30 @@ class CSVAnalyzerGUI(QWidget):
         if not file_path:
             return
         self.set_input_file(Path(file_path))
+    def select_output_dir(self):
+        """选择报告导出目录，默认为项目根目录下的 output。"""
+        start_dir = str(self.output_dir)
+        if not Path(start_dir).is_dir():
+            start_dir = str(PROJECT_ROOT)
+        chosen = QFileDialog.getExistingDirectory(
+            self,
+            "选择报告导出目录",
+            start_dir
+        )
+        if not chosen:
+            return
+        self.set_output_dir(Path(chosen))
+    def set_output_dir(self, path):
+        path = Path(path)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except Exception as error:
+            QMessageBox.warning(self, "目录不可用", f"无法使用该目录：\n{path}\n{error}")
+            return
+        self.output_dir = path
+        self.output_dir_edit.setText(str(path))
+        self.output_dir_edit.setToolTip(str(path))
+        self.output_dir_edit.setCursorPosition(0)
     def set_input_file(self, path):
         if self.analysis_thread is not None:
             return
@@ -518,11 +600,27 @@ class CSVAnalyzerGUI(QWidget):
         self.variable_type_overrides = dialog.get_overrides()
         self.input_file = path
         self.preview_frame = preview_df
+        # 预估必须沿用用户在「变量类型」里的选择（如标识符），否则估算会偏小。
+        preview_profile = apply_variable_type_overrides(preview_profile, self.variable_type_overrides)
         self.preview_variable_types = preview_profile.get("variable_types", {})
+        self.preview_identifier_columns = [
+            str(column)
+            for column, info in self.preview_variable_types.items()
+            if info.get("detected_type") == "identifier"
+        ]
         try:
             self.input_row_count = count_csv_rows(path)
         except Exception:
             self.input_row_count = int(len(preview_df))
+        # 体积预估的单位成本只与预览样本有关，选文件时测一次即可。
+        self.preview_costs = None
+        try:
+            self.preview_costs = measure_payload_costs(
+                preview_df,
+                self.preview_variable_types
+            )
+        except Exception:
+            self.preview_costs = None
         self.selected_file_label.setText(
             f"已选择：{path}"
         )
@@ -553,49 +651,85 @@ class CSVAnalyzerGUI(QWidget):
             return
         self.export_all_checkbox.setEnabled(True)
         rows = int(self.input_row_count or 0)
+        costs = getattr(self, "preview_costs", None)
         try:
-            sampled_size = estimate_dashboard_size(
+            if costs is None:
+                costs = measure_payload_costs(
+                    self.preview_frame,
+                    self.preview_variable_types
+                )
+            sampled_low, sampled_high = estimate_dashboard_size_range(
                 self.preview_frame,
                 self.preview_variable_types,
                 export_all_data=False,
-                total_rows=rows
+                total_rows=rows,
+                costs=costs
             )
-            full_size = estimate_dashboard_size(
+            full_low, full_high = estimate_dashboard_size_range(
                 self.preview_frame,
                 self.preview_variable_types,
                 export_all_data=True,
-                total_rows=rows
+                total_rows=rows,
+                costs=costs
             )
+            sampled_size = format_size_range(sampled_low, sampled_high)
+            full_size = format_size_range(full_low, full_high)
         except Exception:
-            sampled_size = 0
-            full_size = 0
-        self.export_info_badge.set_tip(
-            EXPORT_ALL_TIP + f"<br><br><b>当前数据集</b><br>共 {rows:,} 行。"
+            sampled_size = "—"
+            full_size = "—"
+        identifier_note = ""
+        if getattr(self, "preview_identifier_columns", None):
+            identifier_note = (
+                "<br><br><b>当前数据集</b><br>"
+                f"共 {rows:,} 行；"
+                f"标识符：{'、'.join(self.preview_identifier_columns[:3])}"
+                f"{' 等' if len(self.preview_identifier_columns) > 3 else ''}，"
+                "该维度已按全量嵌入，可在报告中按单个取值查看完整原始序列。"
+            )
+        else:
+            identifier_note = f"<br><br><b>当前数据集</b><br>共 {rows:,} 行。"
+        self.export_info_badge.set_tip(EXPORT_ALL_TIP + identifier_note)
+        identifier_suffix = (
+            " · 标识符全量留存"
+            if getattr(self, "preview_identifier_columns", None)
+            else ""
         )
         if rows <= MAX_NUMERIC_POINTS:
             self.export_hint_label.setStyleSheet(neutral_style)
             self.export_hint_label.setText(
                 f"{rows:,} 行，未超 {MAX_NUMERIC_POINTS:,} 行上限 · "
-                f"勾选与否一致 · 报告约 {format_size(full_size)}"
+                f"勾选与否一致 · 报告约 {full_size}{identifier_suffix}"
             )
             return
         if self.export_all_checkbox.isChecked():
             self.export_hint_label.setStyleSheet(warning_style)
             self.export_hint_label.setText(
-                f"全部 {rows:,} 行 · 报告约 {format_size(full_size)}"
-                f"（抽样约 {format_size(sampled_size)}）· 体积与性能开销增加"
+                f"全部 {rows:,} 行 · 报告约 {full_size}"
+                f"（抽样约 {sampled_size}）· 体积与性能开销增加{identifier_suffix}"
             )
             return
         self.export_hint_label.setStyleSheet(notice_style)
         self.export_hint_label.setText(
             f"抽样 {MAX_NUMERIC_POINTS:,} 行 / 共 {rows:,} 行 · "
-            f"报告约 {format_size(sampled_size)}（全量约 {format_size(full_size)}）"
+            f"报告约 {sampled_size}"
+            f"（全量约 {full_size}）{identifier_suffix}"
         )
     def start_analysis(self):
         if self.input_file is None:
             return
         if self.analysis_thread is not None:
             return
+        if not self.output_dir.is_dir():
+            try:
+                self.output_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as error:
+                QMessageBox.warning(self, "目录不可用", f"无法创建导出目录：\n{self.output_dir}\n{error}")
+                self.analyze_button.setEnabled(True)
+                self.progress_bar.setVisible(False)
+                self.status_label.setText("导出目录不可用，请重新选择。")
+                return
+        self.output_dir_edit.setEnabled(False)
+        self.output_dir_button.setEnabled(False)
         self.analyze_button.setEnabled(False)
         self.select_button.setEnabled(False)
         self.export_all_checkbox.setEnabled(False)
@@ -604,7 +738,6 @@ class CSVAnalyzerGUI(QWidget):
         self.status_label.setText("正在准备分析...")
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
-        self.output_dir = (PROJECT_ROOT / "output")
         self.analysis_thread = QThread()
         self.analysis_worker = AnalysisWorker(
             input_file=self.input_file,
@@ -642,6 +775,8 @@ class CSVAnalyzerGUI(QWidget):
     def analysis_thread_finished(self):
         self.progress_bar.setVisible(False)
         self.analyze_button.setEnabled(self.input_file is not None)
+        self.output_dir_edit.setEnabled(True)
+        self.output_dir_button.setEnabled(True)
         self.select_button.setEnabled(True)
         self.export_all_checkbox.setEnabled(self.input_file is not None)
         self.analysis_worker = None

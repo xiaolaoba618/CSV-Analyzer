@@ -5,3 +5,5 @@ output/
 .idea/
 build_exe.py
 *.csv
+__pycache__/
+*.pyc

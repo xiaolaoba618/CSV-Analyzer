@@ -2,6 +2,7 @@ from pathlib import Path
 import base64
 import json
 import html
+import math
 from datetime import date, datetime
 import numpy as np
 import pandas as pd
@@ -996,18 +997,211 @@ def generate_dashboard(
 ESTIMATE_SAMPLE_ROWS = 400
 # 与数据量基本无关的固定开销（模板 + 统计量 + 变量卡片等），按实测校准。
 ESTIMATE_BASE_BYTES = 500_000
-# 静态图片（base64 PNG）随数值列数增长，按实测校准。
-ESTIMATE_IMAGE_BYTES_PER_COLUMN = 800_000
-# 时间序列「聚合」部分：每个「时间桶 × 数值列」一条记录，按实测校准。
-ESTIMATE_TIMESERIES_BYTES_PER_RECORD = 111
-# 时间序列「异常点」部分：每条异常记录约 71 字节，按实测校准。
-ESTIMATE_ANOMALY_BYTES_PER_ITEM = 71
-# 无法从预览估算异常率时使用的兜底值（实测区间 4%~9%）。
-ESTIMATE_ANOMALY_RATE_FALLBACK = 0.06
-# 散点图：数值变量两两组合，每组固定 5000 点，按实测校准。
-ESTIMATE_SCATTER_BYTES_PER_PAIR = 150_000
-# 标识符联动数据按全量行数嵌入，每行的开销，按实测校准。
-ESTIMATE_IDENTIFIER_BYTES_PER_ROW = 35
+# 静态图片每张的估算开销（base64 PNG），按实测校准。
+# PNG 体积随数据离散程度浮动很大（同点数的散点图可差数倍），因此只给区间。
+ESTIMATE_IMAGE_HISTOGRAM_BYTES = 60_000
+ESTIMATE_IMAGE_BOXPLOT_BYTES = 50_000
+ESTIMATE_IMAGE_SCATTER_BYTES = 400_000
+ESTIMATE_IMAGE_CATEGORY_BYTES = 100_000
+# 时间序列趋势图依赖全量聚合结果，无法用预览实测，按实测校准。
+ESTIMATE_IMAGE_TIMESERIES_BYTES = 180_000
+# 小时/星期/每日分布三张图的固定开销。
+ESTIMATE_IMAGE_FIXED_BYTES = 240_000
+# 预览只见局部主体，全量数据跨主体的跳变会额外产生异常点，按实测放大。
+ESTIMATE_ANOMALY_RATE_SAFETY = 1.6
+ESTIMATE_ANOMALY_RATE_CAP = 0.25
+# 预估上下界系数：静态图片占比越高、数据越杂乱，不确定性越大。
+ESTIMATE_RANGE_LOW_FACTOR = 0.75
+ESTIMATE_RANGE_HIGH_FACTOR = 1.6
+# 以下常量仅在无法从预览样本实测时兜底使用。
+ESTIMATE_TIMESERIES_BYTES_PER_RECORD_FALLBACK = 100
+ESTIMATE_TIME_CHART_BYTES_PER_RECORD_FALLBACK = 48
+ESTIMATE_ANOMALY_BYTES_PER_ITEM_FALLBACK = 60
+ESTIMATE_ANOMALY_ROW_RATE_FALLBACK = 0.05
+ESTIMATE_SCATTER_BYTES_PER_POINT_FALLBACK = 25
+ESTIMATE_IDENTIFIER_BYTES_PER_ROW_FALLBACK = 80
+
+
+def _json_size(payload):
+    """按 Dashboard 实际写入方式序列化后的字节数。"""
+    try:
+        return len(_to_json(payload).encode("utf-8"))
+    except Exception:
+        return 0
+
+
+def _measure_scatter_point_bytes(sample, numeric_columns):
+    """实测散点图单个点的字节成本（散点图恒为每对变量 5000 点）。"""
+    selected = numeric_columns[:MAX_SCATTER_VARIABLES]
+    if len(selected) < 2:
+        return None
+    try:
+        pair = sample[[selected[0], selected[1]]].copy()
+        pair = pair.replace([np.inf, -np.inf], np.nan).dropna()
+    except Exception:
+        return None
+    if len(pair) < 2:
+        return None
+    points = []
+    for _, row in pair.head(200).iterrows():
+        try:
+            points.append({"x": float(row[selected[0]]), "y": float(row[selected[1]])})
+        except (TypeError, ValueError):
+            continue
+    if not points:
+        return None
+    return _json_size(points) / len(points)
+
+
+def _measure_identifier_row_bytes(sample, variable_types):
+    """实测标识符联动数据每行的字节成本。"""
+    if not _get_identifier_columns(sample, variable_types):
+        return 0
+    try:
+        payload = _prepare_identifier_chart_data(sample, variable_types)
+    except Exception:
+        return None
+    rows = int(payload.get("row_count") or 0)
+    if rows <= 0:
+        return None
+    total = _json_size(payload)
+    # 预览样本的标识符取值远少于全量，扣除取值表本身的固定开销。
+    values_size = _json_size(payload.get("identifier_columns") or {})
+    return max(total - values_size, 0) / rows
+
+
+def _measure_time_series_costs(sample, variable_types, numeric_columns):
+    """实测时间序列相关记录的字节成本。
+
+    返回 (每条聚合记录字节, 每条异常记录字节, 每行每列的异常率, 每条趋势图记录字节)。
+    """
+    fallback = (
+        ESTIMATE_TIMESERIES_BYTES_PER_RECORD_FALLBACK,
+        ESTIMATE_ANOMALY_BYTES_PER_ITEM_FALLBACK,
+        ESTIMATE_ANOMALY_ROW_RATE_FALLBACK,
+        ESTIMATE_TIME_CHART_BYTES_PER_RECORD_FALLBACK,
+    )
+    if not numeric_columns:
+        return fallback
+    try:
+        from tools.time_series import analyze_time_series
+        result = analyze_time_series(sample, variable_types)
+    except Exception:
+        return fallback
+    if not isinstance(result, dict) or result.get("status") != "ok":
+        return fallback
+    sample_rows = int(len(sample))
+    aggregation = result.get("aggregation") or {}
+    variables = aggregation.get("variables") or {}
+    records = 0
+    records_bytes = 0
+    for variable_result in variables.values():
+        if not isinstance(variable_result, dict):
+            continue
+        items = variable_result.get("results") or []
+        if not items:
+            continue
+        records += len(items)
+        records_bytes += _json_size(items)
+    anomaly_count = 0
+    anomaly_bytes = 0
+    original = result.get("original_series") or {}
+    for variable_result in (original.get("variables") or {}).values():
+        if not isinstance(variable_result, dict):
+            continue
+        items = ((variable_result.get("anomalies") or {}).get("anomalies") or [])
+        if not items:
+            continue
+        anomaly_count += len(items)
+        anomaly_bytes += _json_size(items)
+    bytes_per_record = (
+        records_bytes / records
+        if records
+        else ESTIMATE_TIMESERIES_BYTES_PER_RECORD_FALLBACK
+    )
+    bytes_per_anomaly = (
+        anomaly_bytes / anomaly_count
+        if anomaly_count
+        else ESTIMATE_ANOMALY_BYTES_PER_ITEM_FALLBACK
+    )
+    if sample_rows > 0 and len(numeric_columns) > 0:
+        row_anomaly_rate = anomaly_count / float(sample_rows * len(numeric_columns))
+    else:
+        row_anomaly_rate = ESTIMATE_ANOMALY_ROW_RATE_FALLBACK
+    # 趋势图数据（_prepare_time_series_chart_data 的输出）。
+    chart_records = 0
+    chart_bytes = 0
+    try:
+        chart = _prepare_time_series_chart_data(result)
+        for payload in chart.values():
+            items = payload.get("data") or []
+            if not items:
+                continue
+            chart_records += len(items)
+            chart_bytes += _json_size(items)
+    except Exception:
+        chart_records = 0
+    bytes_per_chart_record = (
+        chart_bytes / chart_records
+        if chart_records
+        else ESTIMATE_TIME_CHART_BYTES_PER_RECORD_FALLBACK
+    )
+    return (bytes_per_record, bytes_per_anomaly, row_anomaly_rate, bytes_per_chart_record)
+
+
+def measure_payload_costs(df, variable_types=None, sample_rows=ESTIMATE_SAMPLE_ROWS):
+    """从预览样本实测单位字节成本，供体积预估复用（一次测量，多次估算）。
+
+    返回的键：
+      detail_bytes_per_row      行级明细（数值明细 + 时间明细）每行字节
+      scatter_bytes_per_point   交互散点图每个点字节
+      identifier_bytes_per_row  标识符联动每行字节
+      timeseries_bytes_per_record / anomaly_bytes_per_item / anomaly_row_rate /
+      time_chart_bytes_per_record
+      numeric_count / categorical_count
+    """
+    costs = {}
+    if df is None or getattr(df, "empty", True):
+        return costs
+    variable_types = variable_types or {}
+    sample = df.head(min(sample_rows, int(len(df))))
+    numeric_columns = _get_numeric_columns(sample, variable_types)
+    categorical_columns = _get_categorical_columns(sample, variable_types)
+    costs["numeric_count"] = len(numeric_columns)
+    costs["categorical_count"] = len(categorical_columns)
+    detail_per_row = 0.0
+    try:
+        numeric_rows = _prepare_numeric_data(sample, variable_types, full_data=True).get("rows") or []
+        if numeric_rows:
+            detail_per_row += _json_size(numeric_rows) / len(numeric_rows)
+    except Exception:
+        pass
+    try:
+        time_rows = _prepare_time_data(sample, variable_types, full_data=True).get("rows") or []
+        if time_rows:
+            detail_per_row += _json_size(time_rows) / len(time_rows)
+    except Exception:
+        pass
+    costs["detail_bytes_per_row"] = detail_per_row
+    scatter_per_point = _measure_scatter_point_bytes(sample, numeric_columns)
+    costs["scatter_bytes_per_point"] = (
+        scatter_per_point
+        if scatter_per_point
+        else ESTIMATE_SCATTER_BYTES_PER_POINT_FALLBACK
+    )
+    identifier_per_row = _measure_identifier_row_bytes(sample, variable_types)
+    costs["identifier_bytes_per_row"] = (
+        identifier_per_row
+        if identifier_per_row
+        else ESTIMATE_IDENTIFIER_BYTES_PER_ROW_FALLBACK
+    )
+    (
+        costs["timeseries_bytes_per_record"],
+        costs["anomaly_bytes_per_item"],
+        costs["anomaly_row_rate"],
+        costs["time_chart_bytes_per_record"],
+    ) = _measure_time_series_costs(sample, variable_types, numeric_columns)
+    return costs
 
 
 def _estimate_time_buckets(df, variable_types, total_rows):
@@ -1038,73 +1232,140 @@ def _estimate_time_buckets(df, variable_types, total_rows):
     return int(min(total_rows, max(unique_count, sample_rows)))
 
 
-def _estimate_anomaly_rate(df, variable_types):
-    """用预览样本估算异常点占比，用于预估时间序列异常记录的体积。"""
-    try:
-        from tools.time_series import _detect_anomalies
-    except Exception:
-        return ESTIMATE_ANOMALY_RATE_FALLBACK
-    rates = []
-    for column in _get_numeric_columns(df, variable_types)[:3]:
-        try:
-            result = _detect_anomalies(df[column])
-            if result.get("status") != "ok":
-                continue
-            total = int(len(df))
-            if total > 0:
-                rates.append(int(result.get("anomaly_count") or 0) / total)
-        except Exception:
-            continue
-    if not rates:
-        return ESTIMATE_ANOMALY_RATE_FALLBACK
-    return sum(rates) / len(rates)
+# 区间格式化时的取整粒度：单位 -> (除数, 单位名, 粒度, 小数位)。
+_SIZE_RANGE_UNITS = (
+    (1024 ** 3, "GB", 0.5, 1),
+    (1024 ** 2, "MB", 5.0, 0),
+    (1024.0, "KB", 5.0, 0),
+    (1.0, "B", 10.0, 0),
+)
 
 
-def estimate_dashboard_size(df, variable_types=None, export_all_data=False, total_rows=None):
-    """估算生成的 dashboard.html 体积（字节），仅用于界面提示。
+def format_size_range(low_bytes, high_bytes):
+    """把体积区间格式化为「35~80 MB」这样的文本；上下界接近时退化为单个值。
 
-    体积由四部分构成：
-      1. 固定开销与静态图片（随数值列数增长）；
-      2. 时间序列聚合：随「时间桶数 × 数值列数」增长，与总行数无关；
-      3. 时间序列异常点：随「异常点数 × 数值列数」增长，异常率由预览样本估得；
-      4. 受抽样影响的交互明细：随参与图表的数据行数增长。
+    上下界一律「向外」取整（下限向下、上限向上），保证取整不会收窄已有区间。
+    """
+    low = max(float(low_bytes or 0), 0.0)
+    high = max(float(high_bytes or 0), low)
+    divisor, unit, step, decimals = next(
+        item for item in _SIZE_RANGE_UNITS if high >= item[0]
+    )
+    low_value = math.floor(low / divisor / step) * step
+    high_value = math.ceil(high / divisor / step) * step
+    if low_value == high_value:
+        return f"{low_value:.{decimals}f} {unit}"
+    return f"{low_value:.{decimals}f}~{high_value:.{decimals}f} {unit}"
 
-    属于量级预估（实测误差约 ±20%），不是精确值。
+
+def _estimate_dashboard_bytes(df, variable_types, export_all_data, total_rows, costs):
+    """按报告的构成逐项累加，得到体积的量级估计（字节）。
+
+    构成（与 nullable 的行数关系各不相同）：
+      1. 固定开销 + 静态图片：随列数、图数增长；
+      2. 行级明细（数值 + 时间）：受「导出全部数据」控制；
+      3. 交互散点图：变量两两组合 × 5000 点，永不受选项影响；
+      4. 交互趋势图数据：时间桶数（上限 5000）× 数值列数；
+      5. 时间序列聚合 + 异常点：按全量行数计（跨主体跳变会产生额外异常点，
+         预览样本估出的异常率会按实测系数放大）；
+      6. 标识符联动明细：按全量行数嵌入（上限 200 万行），不受选项影响。
+
+    静态 PNG 的压缩率随数据离散程度浮动很大，因此这里只求量级，
+    最终在界面上以「区间」形式呈现，不承诺精确值。
+    """
+    numeric_count = int(costs.get("numeric_count") or 0)
+    categorical_count = int(costs.get("categorical_count") or 0)
+    detail_per_row = float(costs.get("detail_bytes_per_row") or 0.0)
+    scatter_per_point = float(
+        costs.get("scatter_bytes_per_point") or ESTIMATE_SCATTER_BYTES_PER_POINT_FALLBACK
+    )
+    identifier_per_row = float(
+        costs.get("identifier_bytes_per_row") or ESTIMATE_IDENTIFIER_BYTES_PER_ROW_FALLBACK
+    )
+    ts_per_record = float(
+        costs.get("timeseries_bytes_per_record") or ESTIMATE_TIMESERIES_BYTES_PER_RECORD_FALLBACK
+    )
+    anomaly_per_item = float(
+        costs.get("anomaly_bytes_per_item") or ESTIMATE_ANOMALY_BYTES_PER_ITEM_FALLBACK
+    )
+    anomaly_row_rate = float(costs.get("anomaly_row_rate") or ESTIMATE_ANOMALY_ROW_RATE_FALLBACK)
+    chart_per_record = float(
+        costs.get("time_chart_bytes_per_record") or ESTIMATE_TIME_CHART_BYTES_PER_RECORD_FALLBACK
+    )
+    buckets = _estimate_time_buckets(df, variable_types, total_rows)
+    has_identifier = bool(
+        _get_identifier_columns(
+            df.head(min(ESTIMATE_SAMPLE_ROWS, int(len(df)))), variable_types
+        )
+    )
+    used_rows = total_rows if export_all_data else min(total_rows, MAX_NUMERIC_POINTS)
+    scatter_variables = min(numeric_count, MAX_SCATTER_VARIABLES)
+    scatter_pairs = max(scatter_variables * (scatter_variables - 1) // 2, 0)
+    scatter_points = min(MAX_SCATTER_POINTS, max(total_rows, 0)) * scatter_pairs
+    time_series_figures = min(numeric_count, MAX_SCATTER_VARIABLES)
+    chart_records = min(buckets, MAX_TIME_POINTS) * numeric_count
+    anomaly_rate = min(anomaly_row_rate * ESTIMATE_ANOMALY_RATE_SAFETY, ESTIMATE_ANOMALY_RATE_CAP)
+    identifier_rows = min(total_rows, MAX_IDENTIFIER_CHART_ROWS) if has_identifier else 0
+    image_bytes = (
+        (ESTIMATE_IMAGE_HISTOGRAM_BYTES + ESTIMATE_IMAGE_BOXPLOT_BYTES) * numeric_count
+        + ESTIMATE_IMAGE_CATEGORY_BYTES * categorical_count
+        + ESTIMATE_IMAGE_SCATTER_BYTES * scatter_pairs
+        + ESTIMATE_IMAGE_TIMESERIES_BYTES * time_series_figures
+        + ESTIMATE_IMAGE_FIXED_BYTES
+    )
+    return (
+        ESTIMATE_BASE_BYTES
+        + image_bytes
+        + scatter_per_point * scatter_points
+        + chart_per_record * chart_records
+        + ts_per_record * buckets * numeric_count
+        + anomaly_per_item * anomaly_rate * total_rows * numeric_count
+        + identifier_per_row * identifier_rows
+        + detail_per_row * used_rows
+    )
+
+
+def estimate_dashboard_size_range(
+    df, variable_types=None, export_all_data=False, total_rows=None, costs=None
+):
+    """估算生成报告的体积累级区间，返回 (下限字节, 上限字节)。
+
+    只保证真实体积大概率落在区间内，不做精确预测：静态图片的 base64 体积
+    会随数据形态上下浮动数倍，这是无法在选文件阶段算准的部分。
+    失败或数据为空时返回 (0, 0)。
     """
     if df is None or getattr(df, "empty", True):
-        return 0
+        return (0, 0)
     variable_types = variable_types or {}
     if total_rows is None:
         total_rows = int(len(df))
     total_rows = int(total_rows)
     if total_rows <= 0:
-        return 0
-    sample = df.head(min(ESTIMATE_SAMPLE_ROWS, int(len(df))))
-    numeric_rows = _prepare_numeric_data(sample, variable_types, full_data=True).get("rows") or []
-    per_row = 0.0
-    if numeric_rows:
-        numeric_bytes = len(json.dumps(numeric_rows, ensure_ascii=False).encode("utf-8"))
-        per_row = numeric_bytes / len(numeric_rows)
-        time_rows = _prepare_time_data(sample, variable_types, full_data=True).get("rows") or []
-        if time_rows:
-            time_bytes = len(json.dumps(time_rows, ensure_ascii=False).encode("utf-8"))
-            per_row += time_bytes / len(time_rows)
-    numeric_count = len(_get_numeric_columns(sample, variable_types))
-    buckets = _estimate_time_buckets(df, variable_types, total_rows)
-    anomaly_rate = _estimate_anomaly_rate(sample, variable_types)
-    has_identifier = bool(_get_identifier_columns(sample, variable_types))
-    used_rows = total_rows if export_all_data else min(total_rows, MAX_NUMERIC_POINTS)
-    scatter_variables = min(numeric_count, MAX_SCATTER_VARIABLES)
-    scatter_pairs = max(scatter_variables * (scatter_variables - 1) // 2, 0)
-    return int(
-        ESTIMATE_BASE_BYTES
-        + ESTIMATE_IMAGE_BYTES_PER_COLUMN * numeric_count
-        + ESTIMATE_SCATTER_BYTES_PER_PAIR * scatter_pairs
-        + ESTIMATE_TIMESERIES_BYTES_PER_RECORD * buckets * numeric_count
-        + ESTIMATE_ANOMALY_BYTES_PER_ITEM * total_rows * anomaly_rate * numeric_count
-        + (ESTIMATE_IDENTIFIER_BYTES_PER_ROW * total_rows if has_identifier else 0)
-        + per_row * used_rows
+        return (0, 0)
+    if costs is None:
+        costs = measure_payload_costs(df, variable_types)
+    try:
+        size = _estimate_dashboard_bytes(
+            df, variable_types, export_all_data, total_rows, costs
+        )
+    except Exception:
+        return (0, 0)
+    if size <= 0:
+        return (0, 0)
+    return (
+        int(size * ESTIMATE_RANGE_LOW_FACTOR),
+        int(size * ESTIMATE_RANGE_HIGH_FACTOR),
     )
+
+
+def estimate_dashboard_size(
+    df, variable_types=None, export_all_data=False, total_rows=None, costs=None
+):
+    """估算体积的单点值（区间中点），用于需要单个数字的场景。"""
+    low, high = estimate_dashboard_size_range(
+        df, variable_types, export_all_data, total_rows, costs
+    )
+    return int((low + high) / 2)
 
 
 def format_size(bytes_value):
