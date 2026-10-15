@@ -34,9 +34,7 @@ from analyzer import analyze_csv
 from report.dashboard_generator import (
     MAX_NUMERIC_POINTS,
     MAX_SCATTER_POINTS,
-    estimate_dashboard_size_range,
-    format_size_range,
-    measure_payload_costs,
+    format_size,
 )
 from tools.data_loader import load_csv_preview, SUPPORTED_ENCODINGS
 from tools.data_profiler import analyze_profile, apply_variable_type_overrides
@@ -77,8 +75,8 @@ EXPORT_ALL_TIP = (
     "<b>4. 恒为全量</b><br>"
     "KPI、缺失率、相关系数等统计量始终基于完整数据计算，与勾选无关。<br><br>"
     "<b>关于体积</b><br>"
-    "下方体积是量级估算区间，不是精确值：静态图片的大小会随数据形态浮动数倍，"
-    "实际结果可能落在区间内的任意位置。"
+    "报告体积取决于数据量与图表的实际大小，生成前无法准确预估；"
+    "分析完成后，界面会直接显示两份报告的实际占用。"
 )
 
 EXPORT_ALL_ADVICE = (
@@ -600,7 +598,6 @@ class CSVAnalyzerGUI(QWidget):
         self.variable_type_overrides = dialog.get_overrides()
         self.input_file = path
         self.preview_frame = preview_df
-        # 预估必须沿用用户在「变量类型」里的选择（如标识符），否则估算会偏小。
         preview_profile = apply_variable_type_overrides(preview_profile, self.variable_type_overrides)
         self.preview_variable_types = preview_profile.get("variable_types", {})
         self.preview_identifier_columns = [
@@ -612,15 +609,6 @@ class CSVAnalyzerGUI(QWidget):
             self.input_row_count = count_csv_rows(path)
         except Exception:
             self.input_row_count = int(len(preview_df))
-        # 体积预估的单位成本只与预览样本有关，选文件时测一次即可。
-        self.preview_costs = None
-        try:
-            self.preview_costs = measure_payload_costs(
-                preview_df,
-                self.preview_variable_types
-            )
-        except Exception:
-            self.preview_costs = None
         self.selected_file_label.setText(
             f"已选择：{path}"
         )
@@ -651,32 +639,6 @@ class CSVAnalyzerGUI(QWidget):
             return
         self.export_all_checkbox.setEnabled(True)
         rows = int(self.input_row_count or 0)
-        costs = getattr(self, "preview_costs", None)
-        try:
-            if costs is None:
-                costs = measure_payload_costs(
-                    self.preview_frame,
-                    self.preview_variable_types
-                )
-            sampled_low, sampled_high = estimate_dashboard_size_range(
-                self.preview_frame,
-                self.preview_variable_types,
-                export_all_data=False,
-                total_rows=rows,
-                costs=costs
-            )
-            full_low, full_high = estimate_dashboard_size_range(
-                self.preview_frame,
-                self.preview_variable_types,
-                export_all_data=True,
-                total_rows=rows,
-                costs=costs
-            )
-            sampled_size = format_size_range(sampled_low, sampled_high)
-            full_size = format_size_range(full_low, full_high)
-        except Exception:
-            sampled_size = "—"
-            full_size = "—"
         identifier_note = ""
         if getattr(self, "preview_identifier_columns", None):
             identifier_note = (
@@ -698,21 +660,18 @@ class CSVAnalyzerGUI(QWidget):
             self.export_hint_label.setStyleSheet(neutral_style)
             self.export_hint_label.setText(
                 f"{rows:,} 行，未超 {MAX_NUMERIC_POINTS:,} 行上限 · "
-                f"勾选与否一致 · 报告约 {full_size}{identifier_suffix}"
+                f"勾选与否一致{identifier_suffix}"
             )
             return
         if self.export_all_checkbox.isChecked():
             self.export_hint_label.setStyleSheet(warning_style)
             self.export_hint_label.setText(
-                f"全部 {rows:,} 行 · 报告约 {full_size}"
-                f"（抽样约 {sampled_size}）· 体积与性能开销增加{identifier_suffix}"
+                f"全部 {rows:,} 行写入交互式报告 · 体积与性能开销增加{identifier_suffix}"
             )
             return
         self.export_hint_label.setStyleSheet(notice_style)
         self.export_hint_label.setText(
-            f"抽样 {MAX_NUMERIC_POINTS:,} 行 / 共 {rows:,} 行 · "
-            f"报告约 {sampled_size}"
-            f"（全量约 {full_size}）{identifier_suffix}"
+            f"抽样 {MAX_NUMERIC_POINTS:,} 行 / 共 {rows:,} 行{identifier_suffix}"
         )
     def start_analysis(self):
         if self.input_file is None:
@@ -762,13 +721,25 @@ class CSVAnalyzerGUI(QWidget):
     def analysis_finished(self, result):
         try:
             self.progress_bar.setValue(100)
-            self.status_label.setText("分析完成！")
             self.dashboard_path = Path(result["dashboard_path"])
             self.report_path = Path(result["report_path"])
             self.dashboard_button.setEnabled(True)
             self.report_button.setEnabled(True)
+            # 生成前无法准确预估体积，这里在完成后直接给出实际占用。
+            dashboard_size = self.measure_file_size(self.dashboard_path)
+            report_size = self.measure_file_size(self.report_path)
+            self.status_label.setText(
+                f"分析完成！交互式报告 {dashboard_size} · 静态报告 {report_size}"
+            )
         except Exception as error:
             self.analysis_failed(str(error))
+    @staticmethod
+    def measure_file_size(path):
+        """读取文件实际占用大小，返回可读文本；读取失败时返回「未知」。"""
+        try:
+            return format_size(Path(path).stat().st_size)
+        except OSError:
+            return "未知"
     def analysis_failed(self, error_message):
         self.status_label.setText("分析失败。")
         QMessageBox.critical(self, "分析失败", error_message)
