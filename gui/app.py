@@ -7,7 +7,8 @@ matplotlib.use("Agg")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-from PySide6.QtCore import (Qt, Signal, QObject, QThread,)
+from PySide6.QtCore import (Qt, Signal, QObject, QThread, QTimer,)
+from PySide6.QtGui import (QColor, QCursor, QPainter, QPen,)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -26,10 +27,12 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHeaderView,
     QDialogButtonBox,
+    QToolTip,
 )
 from analyzer import analyze_csv
 from report.dashboard_generator import (
     MAX_NUMERIC_POINTS,
+    MAX_SCATTER_POINTS,
     estimate_dashboard_size,
     format_size,
 )
@@ -50,6 +53,87 @@ def count_csv_rows(path):
         except (UnicodeDecodeError, LookupError):
             continue
     return 0
+
+EXPORT_ALL_TIP = (
+    "<b>导出全部数据 —— 影响范围</b><br><br>"
+    "报告里的图表数据分两类，本选项只影响第一类：<br><br>"
+    "<b>1. 行级明细（受本选项控制）</b><br>"
+    f"• 未勾选：数值分布、变量关系、时间变化等图表只用随机抽取的 {MAX_NUMERIC_POINTS:,} 行<br>"
+    "• 勾选后：放开到全部数据行<br>"
+    f"• 例外：散点图恒为每对变量 {MAX_SCATTER_POINTS:,} 点 —— 变量两两组合，"
+    "全量会让体积成数十倍放大<br><br>"
+    "<b>2. 时间序列（不受本选项控制）</b><br>"
+    "趋势图是「按时间桶聚合」的结果，存的是每个时间桶的均值／中位数／最值／计数，"
+    "不是原始行。<br>"
+    "多主体数据（如 500 只股票 × 698 个交易日 = 34 万行）会被压成一条均值曲线，"
+    "单只股票的历史无法从中还原；时间桶按自然日补齐，非交易日为空。<br><br>"
+    "<b>3. 恒为全量</b><br>"
+    "KPI、缺失率、相关系数等统计量始终基于完整数据计算，与勾选无关。"
+)
+
+
+class InfoBadge(QLabel):
+    """圆圈感叹号提示图标：鼠标悬停满 0.5 秒后弹出说明。"""
+
+    HOVER_DELAY_MS = 500
+
+    def __init__(self, tooltip_text="", parent=None):
+        super().__init__(parent)
+        self.tooltip_text = tooltip_text
+        self.setFixedSize(16, 16)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
+        # 置空可屏蔽 Qt 自带的即时 tooltip，改由下面自己控制延迟。
+        self.setToolTip("")
+        self.hover_timer = QTimer(self)
+        self.hover_timer.setSingleShot(True)
+        self.hover_timer.setInterval(self.HOVER_DELAY_MS)
+        self.hover_timer.timeout.connect(self.show_tooltip)
+
+    def set_tip(self, text):
+        """更新悬停时显示的说明（支持富文本）。"""
+        self.tooltip_text = text or ""
+        QToolTip.hideText()
+
+    def show_tooltip(self):
+        if not self.tooltip_text:
+            return
+        QToolTip.showText(QCursor.pos(), self.tooltip_text, self)
+
+    def enterEvent(self, event):
+        self.hover_timer.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.hover_timer.stop()
+        QToolTip.hideText()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        self.hover_timer.stop()
+        self.show_tooltip()
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor("#9aa1ab"), 1.2))
+        painter.setBrush(QColor("#eef1f4"))
+        painter.drawEllipse(self.rect().adjusted(1, 1, -1, -1))
+        # 感叹号用几何图形绘制，避免字体缺字形时显示为方框。
+        width, height = self.width(), self.height()
+        center_x = width // 2
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#5f6673"))
+        bar_width = max(2, round(width * 0.16))
+        bar_height = max(3, round(height * 0.34))
+        bar_top = round(height * 0.20)
+        painter.drawRoundedRect(center_x - bar_width // 2, bar_top, bar_width, bar_height, 1, 1)
+        dot_size = max(2, round(width * 0.18))
+        dot_top = round(height * 0.64)
+        painter.drawEllipse(center_x - dot_size // 2, dot_top, dot_size, dot_size)
+        painter.end()
+
 
 class DropArea(QFrame):
     """CSV 文件拖放区域。"""
@@ -238,12 +322,21 @@ class CSVAnalyzerGUI(QWidget):
         self.selected_file_label.setAlignment(Qt.AlignCenter)
         self.selected_file_label.setWordWrap(True)
         main_layout.addWidget(self.selected_file_label)
+        export_row = QWidget()
+        export_row_layout = QHBoxLayout(export_row)
+        export_row_layout.setContentsMargins(0, 0, 0, 0)
+        export_row_layout.setSpacing(6)
         self.export_all_checkbox = QCheckBox("导出全部数据到交互式报告")
         self.export_all_checkbox.setObjectName("exportAllCheckbox")
         self.export_all_checkbox.setChecked(False)
         self.export_all_checkbox.setEnabled(False)
         self.export_all_checkbox.stateChanged.connect(self.update_export_hint)
-        main_layout.addWidget(self.export_all_checkbox)
+        export_row_layout.addWidget(self.export_all_checkbox)
+        self.export_info_badge = InfoBadge(EXPORT_ALL_TIP)
+        self.export_info_badge.setObjectName("exportInfoBadge")
+        export_row_layout.addWidget(self.export_info_badge)
+        export_row_layout.addStretch(1)
+        main_layout.addWidget(export_row)
         self.export_hint_label = QLabel("尚未选择文件")
         self.export_hint_label.setObjectName("exportHint")
         self.export_hint_label.setWordWrap(True)
@@ -476,25 +569,27 @@ class CSVAnalyzerGUI(QWidget):
         except Exception:
             sampled_size = 0
             full_size = 0
+        self.export_info_badge.set_tip(
+            EXPORT_ALL_TIP + f"<br><br><b>当前数据集</b><br>共 {rows:,} 行。"
+        )
         if rows <= MAX_NUMERIC_POINTS:
             self.export_hint_label.setStyleSheet(neutral_style)
             self.export_hint_label.setText(
-                f"数据量 {rows:,} 行，未超过 {MAX_NUMERIC_POINTS:,} 行抽样上限，"
-                f"勾选与否结果一致。报告体积预计约 {format_size(full_size)}。"
+                f"{rows:,} 行，未超 {MAX_NUMERIC_POINTS:,} 行上限 · "
+                f"勾选与否一致 · 报告约 {format_size(full_size)}"
             )
             return
         if self.export_all_checkbox.isChecked():
             self.export_hint_label.setStyleSheet(warning_style)
             self.export_hint_label.setText(
-                f"已勾选：数值分布、变量关系、时间变化等交互图表将使用全部 {rows:,} 行数据。"
-                f"报告体积预计约 {format_size(full_size)}（不勾选约 {format_size(sampled_size)}），"
-                f"文件会明显变大，打开和筛选的性能开销也会增加。"
+                f"全部 {rows:,} 行 · 报告约 {format_size(full_size)}"
+                f"（抽样约 {format_size(sampled_size)}）· 体积与性能开销增加"
             )
             return
         self.export_hint_label.setStyleSheet(notice_style)
         self.export_hint_label.setText(
-            f"未勾选：上述交互图表将随机抽样 {MAX_NUMERIC_POINTS:,} 行（共 {rows:,} 行）。"
-            f"报告体积预计约 {format_size(sampled_size)}（全量约 {format_size(full_size)}）。"
+            f"抽样 {MAX_NUMERIC_POINTS:,} 行 / 共 {rows:,} 行 · "
+            f"报告约 {format_size(sampled_size)}（全量约 {format_size(full_size)}）"
         )
     def start_analysis(self):
         if self.input_file is None:

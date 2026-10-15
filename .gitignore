@@ -4,3 +4,4 @@ dist/
 output/
 .idea/
 build_exe.py
+*.csv

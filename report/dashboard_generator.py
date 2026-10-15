@@ -994,25 +994,82 @@ def generate_dashboard(
 
 
 ESTIMATE_SAMPLE_ROWS = 400
-# 与行数无关的固定开销：模板 + 静态图片 base64 + 统计量 + 聚合图，按实测校准。
-ESTIMATE_FIXED_BYTES = 2_400_000
-# json.dumps 粗测字节数 -> 落盘后实际字节数的折算比，按实测校准。
-ESTIMATE_SERIALIZE_RATIO = 0.88
-# 时间序列区块始终按全量行数嵌入，每个数值变量每行的开销，按实测校准。
-ESTIMATE_TIMESERIES_BYTES_PER_ROW_PER_COLUMN = 100
-# 标识符联动数据同样按全量行数嵌入，每行的开销，按实测校准。
+# 与数据量基本无关的固定开销（模板 + 统计量 + 变量卡片等），按实测校准。
+ESTIMATE_BASE_BYTES = 500_000
+# 静态图片（base64 PNG）随数值列数增长，按实测校准。
+ESTIMATE_IMAGE_BYTES_PER_COLUMN = 800_000
+# 时间序列「聚合」部分：每个「时间桶 × 数值列」一条记录，按实测校准。
+ESTIMATE_TIMESERIES_BYTES_PER_RECORD = 111
+# 时间序列「异常点」部分：每条异常记录约 71 字节，按实测校准。
+ESTIMATE_ANOMALY_BYTES_PER_ITEM = 71
+# 无法从预览估算异常率时使用的兜底值（实测区间 4%~9%）。
+ESTIMATE_ANOMALY_RATE_FALLBACK = 0.06
+# 散点图：数值变量两两组合，每组固定 5000 点，按实测校准。
+ESTIMATE_SCATTER_BYTES_PER_PAIR = 150_000
+# 标识符联动数据按全量行数嵌入，每行的开销，按实测校准。
 ESTIMATE_IDENTIFIER_BYTES_PER_ROW = 35
+
+
+def _estimate_time_buckets(df, variable_types, total_rows):
+    """估算时间序列聚合后的「时间桶」数量。
+
+    注意：时间桶数不等于总行数。面板数据（多主体 × 时间，如 500 只股票 × 698 个交易日）
+    的行数远多于时间桶数；只有「每行一个时间点」时才等于总行数。
+    """
+    resolved = _resolve_time_column(df, variable_types)
+    if resolved is None:
+        return 0
+    time_column = resolved[1]
+    try:
+        work = df.head(min(2000, int(len(df))))
+        unique_count = int(work[time_column].nunique(dropna=True))
+    except Exception:
+        return 0
+    sample_rows = int(len(work))
+    if sample_rows <= 0:
+        return 0
+    if total_rows <= sample_rows:
+        return int(min(unique_count, total_rows))
+    if unique_count >= sample_rows:
+        # 预览内时间戳互不重复：每行一个时间点，可直接按总行数外推。
+        return int(total_rows)
+    # 存在重复时间戳（面板数据）：预览可能只覆盖部分主体，
+    # 取「预览去重数」与「预览行数」的较大值作为保守估计。
+    return int(min(total_rows, max(unique_count, sample_rows)))
+
+
+def _estimate_anomaly_rate(df, variable_types):
+    """用预览样本估算异常点占比，用于预估时间序列异常记录的体积。"""
+    try:
+        from tools.time_series import _detect_anomalies
+    except Exception:
+        return ESTIMATE_ANOMALY_RATE_FALLBACK
+    rates = []
+    for column in _get_numeric_columns(df, variable_types)[:3]:
+        try:
+            result = _detect_anomalies(df[column])
+            if result.get("status") != "ok":
+                continue
+            total = int(len(df))
+            if total > 0:
+                rates.append(int(result.get("anomaly_count") or 0) / total)
+        except Exception:
+            continue
+    if not rates:
+        return ESTIMATE_ANOMALY_RATE_FALLBACK
+    return sum(rates) / len(rates)
 
 
 def estimate_dashboard_size(df, variable_types=None, export_all_data=False, total_rows=None):
     """估算生成的 dashboard.html 体积（字节），仅用于界面提示。
 
-    体积由三部分构成：
-      1. 固定开销：模板、静态图片 base64、统计量与聚合图；
-      2. 始终全量嵌入的区块（时间序列、标识符联动），随总行数线性增长；
-      3. 受抽样影响的交互明细（数值分布、时间变化），随参与图表的数据行数增长。
+    体积由四部分构成：
+      1. 固定开销与静态图片（随数值列数增长）；
+      2. 时间序列聚合：随「时间桶数 × 数值列数」增长，与总行数无关；
+      3. 时间序列异常点：随「异常点数 × 数值列数」增长，异常率由预览样本估得；
+      4. 受抽样影响的交互明细：随参与图表的数据行数增长。
 
-    属于量级预估（实测误差约 ±10%），不是精确值。
+    属于量级预估（实测误差约 ±20%），不是精确值。
     """
     if df is None or getattr(df, "empty", True):
         return 0
@@ -1032,21 +1089,20 @@ def estimate_dashboard_size(df, variable_types=None, export_all_data=False, tota
         if time_rows:
             time_bytes = len(json.dumps(time_rows, ensure_ascii=False).encode("utf-8"))
             per_row += time_bytes / len(time_rows)
-    per_row *= ESTIMATE_SERIALIZE_RATIO
     numeric_count = len(_get_numeric_columns(sample, variable_types))
-    has_time_column = any(
-        info.get("detected_type") in ("datetime", "time_index")
-        for info in variable_types.values()
-    )
-    background_per_row = ESTIMATE_IDENTIFIER_BYTES_PER_ROW
-    if has_time_column and numeric_count:
-        background_per_row += (
-            ESTIMATE_TIMESERIES_BYTES_PER_ROW_PER_COLUMN * numeric_count
-        )
+    buckets = _estimate_time_buckets(df, variable_types, total_rows)
+    anomaly_rate = _estimate_anomaly_rate(sample, variable_types)
+    has_identifier = bool(_get_identifier_columns(sample, variable_types))
     used_rows = total_rows if export_all_data else min(total_rows, MAX_NUMERIC_POINTS)
+    scatter_variables = min(numeric_count, MAX_SCATTER_VARIABLES)
+    scatter_pairs = max(scatter_variables * (scatter_variables - 1) // 2, 0)
     return int(
-        ESTIMATE_FIXED_BYTES
-        + background_per_row * total_rows
+        ESTIMATE_BASE_BYTES
+        + ESTIMATE_IMAGE_BYTES_PER_COLUMN * numeric_count
+        + ESTIMATE_SCATTER_BYTES_PER_PAIR * scatter_pairs
+        + ESTIMATE_TIMESERIES_BYTES_PER_RECORD * buckets * numeric_count
+        + ESTIMATE_ANOMALY_BYTES_PER_ITEM * total_rows * anomaly_rate * numeric_count
+        + (ESTIMATE_IDENTIFIER_BYTES_PER_ROW * total_rows if has_identifier else 0)
         + per_row * used_rows
     )
 
