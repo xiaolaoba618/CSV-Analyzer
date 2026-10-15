@@ -52,6 +52,8 @@ pip install -r requirements.txt
 python ./gui/app.py
 ```
 
+现已推出release版，可直接下载可执行文件exe。
+
 如果项目入口文件名称不同，请替换为实际的 GUI 启动文件。
 
 ### 5. 分析数据
