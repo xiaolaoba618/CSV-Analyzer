@@ -872,6 +872,193 @@
         }
 
 
+        /*
+         * 只影响单张图表的控制项，直接放在该图表的卡片内部，
+         * 避免所有选项都堆在图表区上方。
+         */
+        .chart-control-row {
+
+            display:
+                flex;
+
+            flex-wrap:
+                wrap;
+
+            align-items:
+                center;
+
+            gap:
+                8px;
+
+            margin:
+                10px 0
+                14px;
+        }
+
+
+        .chart-control-row
+        label {
+
+            color:
+                var(--text-soft);
+
+            font-size:
+                13px;
+        }
+
+
+        .chart-control-hint {
+
+            color:
+                var(--text-soft);
+
+            font-size:
+                12px;
+        }
+
+
+        /* 悬停 0.5 秒后显示说明的小徽章 */
+        .info-badge {
+
+            position:
+                relative;
+
+            display:
+                inline-flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                center;
+
+            width:
+                16px;
+
+            height:
+                16px;
+
+            border:
+                1px solid
+                var(--primary);
+
+            border-radius:
+                50%;
+
+            background:
+                var(--surface);
+
+            color:
+                var(--primary);
+
+            font-size:
+                11px;
+
+            font-weight:
+                700;
+
+            line-height:
+                1;
+
+            cursor:
+                help;
+
+            flex:
+                none;
+        }
+
+
+        .info-badge::after {
+
+            content:
+                attr(
+                    data-tip
+                );
+
+            position:
+                absolute;
+
+            left:
+                50%;
+
+            bottom:
+                160%;
+
+            transform:
+                translateX(
+                    -50%
+                );
+
+            width:
+                330px;
+
+            max-width:
+                60vw;
+
+            padding:
+                10px 12px;
+
+            border-radius:
+                10px;
+
+            background:
+                var(--text);
+
+            color:
+                #ffffff;
+
+            font-size:
+                12px;
+
+            font-weight:
+                400;
+
+            line-height:
+                1.6;
+
+            text-align:
+                left;
+
+            white-space:
+                normal;
+
+            box-shadow:
+                var(--shadow);
+
+            opacity:
+                0;
+
+            visibility:
+                hidden;
+
+            transition:
+                opacity
+                    0.15s ease,
+                visibility
+                    0.15s ease;
+
+            transition-delay:
+                0.5s;
+
+            z-index:
+                30;
+
+            pointer-events:
+                none;
+        }
+
+
+        .info-badge:hover::after,
+        .info-badge:focus::after {
+
+            opacity:
+                1;
+
+            visibility:
+                visible;
+        }
+
+
         canvas {
 
             width:
@@ -2096,6 +2283,7 @@
             <p class="section-description">
                 选择一个或多个数据变量，查看其分布、变量关系以及时间变化；点击图例可隐藏或恢复对应变量/分组，也可一键隐藏全部分组后再逐个挑出需要的分组。若同一时间存在多条记录，可用「同一时间存在多条记录时」选择按时间桶聚合（取均值）或直接相加（求和）。
 「数值变量按类别统计」已支持多数据变量同图对比，可用「按类别统计方式」切换均值／合计；「分类变量占比」可切换百分比／频数。
+影响全局的选项放在图表区上方，只影响单张图表的选项已下移到各自图表卡片内；数据集缺少某类字段时，对应板块会自动隐藏。
             </p>
 
             <div id="identifierFilterStatus" class="filter-status">
@@ -2187,8 +2375,8 @@
         </div>
 
 
-        <div class="controls explore-variable-controls">
-            <div class="control">
+        <div class="controls explore-variable-controls" id="exploreVariableControls">
+            <div class="control" id="numericVariableControl">
                 <label for="numericVariableMenu">数据变量（可多选）</label>
                 <div class="numeric-multi-select">
                     <div class="numeric-multi-select-header">
@@ -2199,52 +2387,36 @@
                     <select id="numericVariable" multiple hidden></select>
                 </div>
             </div>
-            <div class="control">
-                <label for="numericVariable2">对比变量</label>
-                <select id="numericVariable2"></select>
-            </div>
-            <div class="control">
+            <div class="control" id="categoricalVariableControl">
                 <label for="categoricalVariable">分类分组（可选）</label>
                 <select id="categoricalVariable"></select>
             </div>
-            <div class="control">
-                <label for="distributionVariable">分布变量</label>
-                <select id="distributionVariable"></select>
-            </div>
-            <div class="control">
-                <label for="categoryStatMode">按类别统计方式</label>
-                <select id="categoryStatMode">
-                    <option value="mean">均值</option>
-                    <option value="sum">合计</option>
-                </select>
-            </div>
-            <div class="control">
-                <label for="categoryPieMode">分类占比图展示</label>
-                <select id="categoryPieMode">
-                    <option value="percent">百分比</option>
-                    <option value="count">频数</option>
-                </select>
-            </div>
-            <div class="control control-stacked" id="timeAggregationControl" style="display:none;">
+            <div class="control" id="timeAggregationControl" style="display:none;">
                 <label for="timeAggregation">同一时间存在多条记录时</label>
                 <select id="timeAggregation">
                     <option value="mean">时间桶聚合（取均值）</option>
                     <option value="sum">直接相加（求和）</option>
                 </select>
-                <span class="control-hint" id="timeAggregationHint"></span>
+                <span
+                    class="info-badge"
+                    id="timeAggregationBadge"
+                    role="img"
+                    aria-label="聚合方式说明"
+                    tabindex="0"
+                >!</span>
             </div>
         </div>
 
 
         <div class="chart-visibility-bar" aria-label="图表显示控制">
-            <label class="chart-toggle"><input type="checkbox" id="showDistributionChart" checked> 数值分布</label>
-            <label class="chart-toggle"><input type="checkbox" id="showScatterChart" checked> 变量关系</label>
-            <label class="chart-toggle"><input type="checkbox" id="showTimeChart" checked> 时间变化</label>
-            <label class="chart-toggle"><input type="checkbox" id="showNormalizedScatter" checked> 归一化变量关系</label>
-            <label class="chart-toggle"><input type="checkbox" id="showNormalizedTime" checked> 归一化时间变化</label>
+            <label class="chart-toggle" id="toggleDistributionChart"><input type="checkbox" id="showDistributionChart" checked> 数值分布</label>
+            <label class="chart-toggle" id="toggleScatterChart"><input type="checkbox" id="showScatterChart" checked> 变量关系</label>
+            <label class="chart-toggle" id="toggleTimeChart"><input type="checkbox" id="showTimeChart" checked> 时间变化</label>
+            <label class="chart-toggle" id="toggleNormalizedScatter"><input type="checkbox" id="showNormalizedScatter" checked> 归一化变量关系</label>
+            <label class="chart-toggle" id="toggleNormalizedTime"><input type="checkbox" id="showNormalizedTime" checked> 归一化时间变化</label>
         </div>
 
-        <div class="legend-toolbar">
+        <div class="legend-toolbar" id="legendToolbar">
             <span class="legend-toolbar-label">分组图例</span>
             <button type="button" class="legend-button" id="hideAllGroupDatasets">隐藏全部分组</button>
             <button type="button" class="legend-button" id="showAllGroupDatasets">显示全部分组</button>
@@ -2263,6 +2435,11 @@
 
                 <div class="chart-title">
                     数值分布
+                </div>
+
+                <div class="chart-control-row" id="distributionControlRow">
+                    <label for="distributionVariable">分布变量</label>
+                    <select id="distributionVariable"></select>
                 </div>
 
                 <div class="chart-wrapper">
@@ -2289,6 +2466,12 @@
                         变量关系
                     </div>
                     <button type="button" class="legend-button legend-toggle-button" data-legend-toggle="scatterChart">隐藏全部</button>
+                </div>
+
+                <div class="chart-control-row" id="scatterControlRow">
+                    <label for="numericVariable2">对比变量</label>
+                    <select id="numericVariable2"></select>
+                    <span class="chart-control-hint">归一化变量关系图共用此对比变量。</span>
                 </div>
 
                 <div class="chart-wrapper">
@@ -2375,7 +2558,7 @@
 
             </div>
 
-            <div class="card chart-card full">
+            <div class="card chart-card full" id="categoryCard">
 
                 <div class="chart-title">
                     分类变量频数分布
@@ -2406,6 +2589,14 @@
                     <button type="button" class="legend-button legend-toggle-button" data-legend-toggle="numericByCategoryChart">隐藏全部</button>
                 </div>
 
+                <div class="chart-control-row" id="numericByCategoryControlRow">
+                    <label for="categoryStatMode">按类别统计方式</label>
+                    <select id="categoryStatMode">
+                        <option value="mean">均值</option>
+                        <option value="sum">合计</option>
+                    </select>
+                </div>
+
                 <div class="chart-wrapper">
 
                     <canvas
@@ -2429,6 +2620,14 @@
                         分类变量占比
                     </div>
                     <button type="button" class="legend-button legend-toggle-button" data-legend-toggle="categoryPieChart">隐藏全部</button>
+                </div>
+
+                <div class="chart-control-row" id="categoryPieControlRow">
+                    <label for="categoryPieMode">分类占比图展示</label>
+                    <select id="categoryPieMode">
+                        <option value="percent">百分比</option>
+                        <option value="count">频数</option>
+                    </select>
                 </div>
 
                 <div class="chart-wrapper">
@@ -4489,6 +4688,70 @@
         };
     }
 
+    /*
+     * 分类取值多的时候，图例会占满整张图。这里统一压缩图例尺寸
+     * （小色块 + 11px 字号），并在渲染后按图例项数量撑高容器，
+     * 保证图例既排得下又不把绘图区挤没。
+     */
+    function legendLabelStyle() {
+        return {
+            boxWidth: 12,
+            boxHeight: 12,
+            padding: 8,
+            usePointStyle: true,
+            font: { size: 11 }
+        };
+    }
+
+    function makeLegendConfig() {
+        return {
+            display: true,
+            position: "bottom",
+            labels: legendLabelStyle(),
+            onClick: makeLegendClickHandler()
+        };
+    }
+
+    function makePieLegendConfig(position) {
+        return {
+            display: true,
+            position: position || "right",
+            labels: legendLabelStyle(),
+            onClick: makePieLegendClickHandler()
+        };
+    }
+
+    function legendItemCount(chart) {
+        if (!chart) return 0;
+        if (isPieLikeChart(chart)) return pieSliceCount(chart);
+        return (chart.data && chart.data.datasets ? chart.data.datasets.length : 0);
+    }
+
+    function applyChartLegendLayout(chart, canvasId) {
+        const canvas = chart ? chart.canvas : (canvasId ? document.getElementById(canvasId) : null);
+        if (!canvas) return;
+        const wrapper = canvas.parentElement;
+        if (!wrapper) return;
+        const items = legendItemCount(chart);
+        if (!chart || !items) {
+            wrapper.style.height = "";
+            return;
+        }
+        const base = canvas.id === "categoryPieChart" ? 360 : 290;
+        const position = (chart.options?.plugins?.legend?.position) || "bottom";
+        let height = base;
+        if (position === "right") {
+            // 右侧图例是纵向排列的，按项数直接累加即可。
+            height = Math.max(base, 70 + items * 22);
+        } else {
+            // 底部图例每行大约放 6 项，多一行加 24px。
+            const rows = Math.max(1, Math.ceil(items / 6));
+            height = base + (rows - 1) * 24;
+        }
+        wrapper.style.height = Math.min(height, 900) + "px";
+        if (typeof chart.resize === "function") chart.resize();
+    }
+
     function makePieLegendClickHandler() {
         return function (event, legendItem, legend) {
             const chart = legend.chart;
@@ -4506,6 +4769,7 @@
         if (typeof document === "undefined") return;
         Object.keys(LEGEND_MANAGED_CHARTS).forEach(function (name) {
             const chart = getLegendChart(name);
+            applyChartLegendLayout(chart, name);
             const buttons = document.querySelectorAll('[data-legend-toggle="' + name + '"]');
             buttons.forEach(function (button) {
                 button.disabled = !hasLegendDatasets(chart);
@@ -4775,11 +5039,7 @@
             options: {
                 responsive: true, maintainAspectRatio: false,
                 plugins: {
-                    legend: {
-                        display: true,
-                        position: "bottom",
-                        onClick: makeLegendClickHandler()
-                    }
+                    legend: makeLegendConfig()
                 },
                 scales: {
                     x: { title: { display: true, text: xColumn } },
@@ -4835,7 +5095,8 @@
     }
 
     function updateTimeAggregationHint() {
-        const hint = document.getElementById("timeAggregationHint");
+        // 说明改为悬停徽章显示，不再常驻在选项下方占用版面。
+        const hint = document.getElementById("timeAggregationBadge");
         if (!hint) return;
         const info = getTimeAggregationRows();
         const times = new Set();
@@ -4847,7 +5108,7 @@
             counted += 1;
         });
         if (!counted || !times.size) {
-            hint.textContent = "当前没有可聚合的时间序列数据。";
+            hint.setAttribute("data-tip", "当前没有可聚合的时间序列数据。");
             return;
         }
         let text;
@@ -4867,8 +5128,64 @@
                 info.sourceRowCount.toLocaleString() + " 行），求和得到的是样本合计；" +
                 "若需全量合计，请勾选「导出全部数据」后重新生成。";
         }
-        hint.textContent = text;
+        hint.setAttribute("data-tip", text);
     }
+
+    function setNodeVisible(node, visible) {
+        if (!node) return;
+        node.style.display = visible ? "" : "none";
+    }
+
+    function getAvailableDataKinds() {
+        const numericColumns = (dashboard.numeric_data && Array.isArray(dashboard.numeric_data.columns))
+            ? dashboard.numeric_data.columns
+            : [];
+        return {
+            numericColumns: numericColumns,
+            hasNumeric: numericColumns.length > 0,
+            // 变量关系需要两个以上的数值变量才能形成对比对。
+            hasPair: numericColumns.length > 1,
+            hasCategorical: Object.keys(dashboard.categorical_data || {}).length > 0,
+            hasTime: Boolean(dashboard.time_data && dashboard.time_data.available)
+        };
+    }
+
+    /*
+     * 按数据集实际包含的字段类型裁剪板块：没有时间变量就不渲染时间相关图，
+     * 没有分类变量就不渲染分类相关图，没有数值变量就不渲染分布／关系图，
+     * 让报告更紧凑、不出现一片「无数据」的空图。
+     */
+    function applyChartAvailability() {
+        const kinds = getAvailableDataKinds();
+        const pairs = [
+            ["distributionCard", kinds.hasNumeric],
+            ["toggleDistributionChart", kinds.hasNumeric],
+            ["scatterCard", kinds.hasPair],
+            ["toggleScatterChart", kinds.hasPair],
+            ["normalizedScatterCard", kinds.hasPair],
+            ["toggleNormalizedScatter", kinds.hasPair],
+            ["timeCard", kinds.hasTime],
+            ["toggleTimeChart", kinds.hasTime],
+            ["normalizedTimeCard", kinds.hasTime],
+            ["toggleNormalizedTime", kinds.hasTime],
+            ["categoryCard", kinds.hasCategorical],
+            ["numericByCategoryCard", kinds.hasNumeric && kinds.hasCategorical],
+            ["categoryPieCard", kinds.hasCategorical],
+            ["numericVariableControl", kinds.hasNumeric],
+            ["categoricalVariableControl", kinds.hasCategorical],
+            ["legendToolbar", kinds.hasNumeric || kinds.hasCategorical],
+            ["exploreVariableControls", kinds.hasNumeric || kinds.hasCategorical || kinds.hasTime]
+        ];
+        pairs.forEach(function (pair) {
+            setNodeVisible(document.getElementById(pair[0]), pair[1]);
+        });
+        setNodeVisible(
+            document.getElementById("explore"),
+            kinds.hasNumeric || kinds.hasCategorical || kinds.hasTime
+        );
+        return kinds;
+    }
+
 
     function initializeTimeAggregation() {
         const control = document.getElementById("timeAggregationControl");
@@ -4980,11 +5297,7 @@
                 responsive: true, maintainAspectRatio: false,
                 interaction: { mode: "index", intersect: false },
                 plugins: {
-                    legend: {
-                        display: true,
-                        position: "bottom",
-                        onClick: makeLegendClickHandler()
-                    }
+                    legend: makeLegendConfig()
                 },
                 scales: {
                     x: { title: { display: true, text: timeData.time_column || timeData.datetime_column || "时间" }, ticks: { maxTicksLimit: 12, maxRotation: 45 } },
@@ -5087,11 +5400,7 @@
             options: {
                 responsive: true, maintainAspectRatio: false,
                 plugins: {
-                    legend: {
-                        display: true,
-                        position: "bottom",
-                        onClick: makeLegendClickHandler()
-                    }
+                    legend: makeLegendConfig()
                 },
                 scales: {
                     x: { min: 0, max: 1, title: { display: true, text: xColumn + "（归一化）" } },
@@ -5218,11 +5527,7 @@
                 responsive: true, maintainAspectRatio: false,
                 interaction: { mode: "index", intersect: false },
                 plugins: {
-                    legend: {
-                        display: true,
-                        position: "bottom",
-                        onClick: makeLegendClickHandler()
-                    }
+                    legend: makeLegendConfig()
                 },
                 scales: {
                     x: { title: { display: true, text: timeData.time_column || timeData.datetime_column || "时间" }, ticks: { maxTicksLimit: 12, maxRotation: 45 } },
@@ -5400,11 +5705,7 @@
             options: {
                 responsive: true, maintainAspectRatio: false,
                 plugins: {
-                    legend: {
-                        display: true,
-                        position: "bottom",
-                        onClick: makeLegendClickHandler()
-                    },
+                    legend: makeLegendConfig(),
                     title: {
                         display: true,
                         text: numericColumns.join("、") + " 按 " + categoryColumn + " 分组的" +
@@ -5496,12 +5797,8 @@
             options: {
                 responsive: true, maintainAspectRatio: false,
                 plugins: {
-                    legend: {
-                        display: true,
-                        // 类别少时图例放右侧更清晰，类别多时改为底部避免挤爆右侧。
-                        position: labels.length > 15 ? "bottom" : "right",
-                        onClick: makePieLegendClickHandler()
-                    },
+                    // 类别少时图例放右侧更清晰，类别多时改为底部避免挤爆右侧。
+                    legend: makePieLegendConfig(labels.length > 15 ? "bottom" : "right"),
                     title: {
                         display: true,
                         text: categoryColumn + "：各类别" + (mode === "count" ? "频数" : "占比") + getChartFilterLabel()
@@ -6303,6 +6600,12 @@
              * Even if Chart.js is unavailable,
              * the rest of the dashboard still works.
              */
+
+            safeRun(
+                "Chart availability filtering",
+                applyChartAvailability
+            );
+
 
             safeRun(
                 "Time aggregation initialization",
