@@ -863,6 +863,15 @@
         }
 
 
+        /* 饼图需要同时容纳图形与图例，单独加高一点。 */
+        #categoryPieCard
+        .chart-wrapper {
+
+            height:
+                360px;
+        }
+
+
         canvas {
 
             width:
@@ -2086,6 +2095,7 @@
 
             <p class="section-description">
                 选择一个或多个数据变量，查看其分布、变量关系以及时间变化；点击图例可隐藏或恢复对应变量/分组，也可一键隐藏全部分组后再逐个挑出需要的分组。若同一时间存在多条记录，可用「同一时间存在多条记录时」选择按时间桶聚合（取均值）或直接相加（求和）。
+「数值变量按类别统计」已支持多数据变量同图对比，可用「按类别统计方式」切换均值／合计；「分类变量占比」可切换百分比／频数。
             </p>
 
             <div id="identifierFilterStatus" class="filter-status">
@@ -2201,6 +2211,20 @@
                 <label for="distributionVariable">分布变量</label>
                 <select id="distributionVariable"></select>
             </div>
+            <div class="control">
+                <label for="categoryStatMode">按类别统计方式</label>
+                <select id="categoryStatMode">
+                    <option value="mean">均值</option>
+                    <option value="sum">合计</option>
+                </select>
+            </div>
+            <div class="control">
+                <label for="categoryPieMode">分类占比图展示</label>
+                <select id="categoryPieMode">
+                    <option value="percent">百分比</option>
+                    <option value="count">频数</option>
+                </select>
+            </div>
             <div class="control control-stacked" id="timeAggregationControl" style="display:none;">
                 <label for="timeAggregation">同一时间存在多条记录时</label>
                 <select id="timeAggregation">
@@ -2228,6 +2252,7 @@
             <span class="legend-toolbar-hint">
                 分类取值过多时，可先「隐藏全部分组」，再点击下方图例逐个挑出需要的分组。
                 已选择「分类分组」变量时，点击图例会一次性隐藏／恢复该分组在所选变量下的全部数据。
+                「数值变量按类别统计」按数据变量显隐，「分类变量占比」按扇区显隐；这里的批量操作对它们同样生效。
             </span>
         </div>
 
@@ -2372,10 +2397,13 @@
 
             </div>
 
-            <div class="card chart-card full">
+            <div class="card chart-card full" id="numericByCategoryCard">
 
-                <div class="chart-title">
-                    数值变量按类别统计（均值）
+                <div class="chart-title-row">
+                    <div class="chart-title">
+                        数值变量按类别统计（可按多个数据变量对比）
+                    </div>
+                    <button type="button" class="legend-button legend-toggle-button" data-legend-toggle="numericByCategoryChart">隐藏全部</button>
                 </div>
 
                 <div class="chart-wrapper">
@@ -2387,6 +2415,31 @@
                     <div
                         class="chart-message"
                         id="numericByCategoryMessage"
+                        style="display:none;"
+                    ></div>
+
+                </div>
+
+            </div>
+
+            <div class="card chart-card full" id="categoryPieCard">
+
+                <div class="chart-title-row">
+                    <div class="chart-title" id="categoryPieTitle">
+                        分类变量占比
+                    </div>
+                    <button type="button" class="legend-button legend-toggle-button" data-legend-toggle="categoryPieChart">隐藏全部</button>
+                </div>
+
+                <div class="chart-wrapper">
+
+                    <canvas
+                        id="categoryPieChart"
+                    ></canvas>
+
+                    <div
+                        class="chart-message"
+                        id="categoryPieMessage"
                         style="display:none;"
                     ></div>
 
@@ -3458,6 +3511,21 @@
         select2.addEventListener("change", renderInteractiveCharts);
         categorySelect.addEventListener("change", renderInteractiveCharts);
         distributionSelect.addEventListener("change", renderInteractiveCharts);
+
+        const statModeSelect = document.getElementById("categoryStatMode");
+        const pieModeSelect = document.getElementById("categoryPieMode");
+        if (statModeSelect) {
+            statModeSelect.addEventListener("change", function () {
+                renderNumericByCategoryChart();
+                refreshLegendButtons();
+            });
+        }
+        if (pieModeSelect) {
+            pieModeSelect.addEventListener("change", function () {
+                renderCategoryPieChart();
+                refreshLegendButtons();
+            });
+        }
     }
 
     function initializeNumericMultiSelect() {
@@ -4303,7 +4371,9 @@
         scatterChart: function () { return scatterChart; },
         timeChart: function () { return timeChart; },
         normalizedScatterChart: function () { return normalizedScatterChart; },
-        normalizedTimeChart: function () { return normalizedTimeChart; }
+        normalizedTimeChart: function () { return normalizedTimeChart; },
+        numericByCategoryChart: function () { return window.numericByCategoryChartInstance; },
+        categoryPieChart: function () { return window.categoryPieChartInstance; }
     };
 
     function getLegendChart(name) {
@@ -4315,7 +4385,56 @@
         return Boolean(chart && chart.data && Array.isArray(chart.data.datasets) && chart.data.datasets.length);
     }
 
+    /*
+     * Pie / doughnut charts are the exception: their legend items map to
+     * individual slices instead of datasets, so visibility has to be toggled
+     * per data index.
+     */
+    function isPieLikeChart(chart) {
+        return Boolean(chart && chart.config && chart.config.type === "pie");
+    }
+
+    function pieSliceCount(chart) {
+        if (!hasLegendDatasets(chart)) return 0;
+        return (chart.data.datasets[0].data || []).length;
+    }
+
+    function setAllPieSlicesVisible(chart, visible) {
+        if (!isPieLikeChart(chart)) return;
+        const total = pieSliceCount(chart);
+        for (let index = 0; index < total; index++) {
+            // Chart.js only exposes a toggle for data points, so align by state.
+            if (Boolean(chart.getDataVisibility(index)) !== visible) {
+                chart.toggleDataVisibility(index);
+            }
+        }
+        chart.update();
+    }
+
+    function invertPieSlices(chart) {
+        if (!isPieLikeChart(chart)) return;
+        const total = pieSliceCount(chart);
+        for (let index = 0; index < total; index++) {
+            chart.toggleDataVisibility(index);
+        }
+        chart.update();
+    }
+
+    function isPieAllHidden(chart) {
+        if (!isPieLikeChart(chart)) return false;
+        const total = pieSliceCount(chart);
+        if (!total) return false;
+        for (let index = 0; index < total; index++) {
+            if (chart.getDataVisibility(index)) return false;
+        }
+        return true;
+    }
+
     function setAllDatasetsVisible(chart, visible) {
+        if (isPieLikeChart(chart)) {
+            setAllPieSlicesVisible(chart, visible);
+            return;
+        }
         if (!hasLegendDatasets(chart)) return;
         chart.data.datasets.forEach(function (dataset, index) {
             chart.setDatasetVisibility(index, visible);
@@ -4323,7 +4442,20 @@
         chart.update();
     }
 
+    function invertLegendVisibility(chart) {
+        if (isPieLikeChart(chart)) {
+            invertPieSlices(chart);
+            return;
+        }
+        if (!hasLegendDatasets(chart)) return;
+        chart.data.datasets.forEach(function (dataset, index) {
+            chart.setDatasetVisibility(index, !chart.isDatasetVisible(index));
+        });
+        chart.update();
+    }
+
     function isLegendAllHidden(chart) {
+        if (isPieLikeChart(chart)) return isPieAllHidden(chart);
         if (!hasLegendDatasets(chart)) return false;
         return chart.data.datasets.every(function (dataset, index) {
             return !chart.isDatasetVisible(index);
@@ -4354,6 +4486,19 @@
     function makeLegendClickHandler() {
         return function (event, legendItem, legend) {
             toggleLegendDataset(legend.chart, legendItem.datasetIndex);
+        };
+    }
+
+    function makePieLegendClickHandler() {
+        return function (event, legendItem, legend) {
+            const chart = legend.chart;
+            if (legendItem && typeof legendItem.index === "number") {
+                chart.toggleDataVisibility(legendItem.index);
+            } else if (legendItem && typeof legendItem.datasetIndex === "number") {
+                toggleLegendDataset(chart, legendItem.datasetIndex);
+            }
+            chart.update();
+            refreshLegendButtons();
         };
     }
 
@@ -4394,13 +4539,7 @@
         }
         if (invert) {
             invert.addEventListener("click", function () {
-                eachLegendChart(function (chart) {
-                    if (!hasLegendDatasets(chart)) return;
-                    chart.data.datasets.forEach(function (dataset, index) {
-                        chart.setDatasetVisibility(index, !chart.isDatasetVisible(index));
-                    });
-                    chart.update();
-                });
+                eachLegendChart(function (chart) { invertLegendVisibility(chart); });
                 refreshLegendButtons();
             });
         }
@@ -5184,6 +5323,16 @@
     }
 
 
+    function getCategoryStatMode() {
+        const select = document.getElementById("categoryStatMode");
+        return select && select.value === "sum" ? "sum" : "mean";
+    }
+
+    function getCategoryPieMode() {
+        const select = document.getElementById("categoryPieMode");
+        return select && select.value === "count" ? "count" : "percent";
+    }
+
     function renderNumericByCategoryChart() {
         const canvas = document.getElementById("numericByCategoryChart");
         if (!canvas) return;
@@ -5191,46 +5340,188 @@
             showChartMessage("numericByCategoryMessage", "图表组件未加载。");
             return;
         }
-        const numericColumn = document.getElementById("distributionVariable")?.value || getSelectedNumericColumns()[0] || "";
+        // 与散点图、时间变化图保持一致：使用「数据变量（可多选）」的选中结果，
+        // 每个选中变量一条数据集，同一张图里并排对比。
+        const numericColumns = getSelectedNumericColumns();
         const categoryColumn = document.getElementById("categoricalVariable")?.value || "";
         const rows = getFilteredChartRows();
-        if (!numericColumn || !categoryColumn) {
-            showChartMessage("numericByCategoryMessage", "请同时选择数值变量和分类分组。");
+        if (!numericColumns.length || !categoryColumn) {
+            showChartMessage("numericByCategoryMessage", "请同时选择数据变量和分类分组。");
             if (window.numericByCategoryChartInstance) { window.numericByCategoryChartInstance.destroy(); window.numericByCategoryChartInstance = null; }
+            refreshLegendButtons();
             return;
         }
-        const groups = new Map();
+        const mode = getCategoryStatMode();
+        const perColumn = new Map();
+        numericColumns.forEach(function (column) { perColumn.set(column, new Map()); });
+        const groupCounts = new Map();
         rows.forEach(function (row) {
-            const value = Number(row[numericColumn]);
-            if (!Number.isFinite(value)) return;
             const group = String(row[categoryColumn] ?? "缺失");
-            if (!groups.has(group)) groups.set(group, []);
-            groups.get(group).push(value);
+            groupCounts.set(group, (groupCounts.get(group) || 0) + 1);
+            numericColumns.forEach(function (column) {
+                const value = Number(row[column]);
+                if (!Number.isFinite(value)) return;
+                const bucket = perColumn.get(column);
+                if (!bucket.has(group)) bucket.set(group, { sum: 0, count: 0 });
+                const item = bucket.get(group);
+                item.sum += value;
+                item.count += 1;
+            });
         });
-        const entries = Array.from(groups.entries()).sort((a, b) => b[1].length - a[1].length).slice(0, 15);
-        if (!entries.length) {
+        const labels = Array.from(groupCounts.entries())
+            .sort(function (a, b) { return b[1] - a[1]; })
+            .map(function (entry) { return entry[0]; })
+            .slice(0, 15);
+        if (!labels.length) {
             showChartMessage("numericByCategoryMessage", "所选变量组合没有有效数据。");
+            if (window.numericByCategoryChartInstance) { window.numericByCategoryChartInstance.destroy(); window.numericByCategoryChartInstance = null; }
+            refreshLegendButtons();
             return;
         }
+        const palette = ["#4f46e5", "#0ea5e9", "#16a34a", "#f59e0b", "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#64748b", "#ec4899"];
+        const datasets = numericColumns.map(function (column, index) {
+            const bucket = perColumn.get(column);
+            return {
+                label: column + (mode === "sum" ? " 合计" : " 均值"),
+                data: labels.map(function (label) {
+                    const item = bucket.get(label);
+                    if (!item || !item.count) return null;
+                    return mode === "sum" ? item.sum : item.sum / item.count;
+                }),
+                backgroundColor: palette[index % palette.length],
+                borderRadius: 5
+            };
+        });
         hideChartMessage("numericByCategoryMessage");
         if (window.numericByCategoryChartInstance) window.numericByCategoryChartInstance.destroy();
         window.numericByCategoryChartInstance = new Chart(canvas, {
             type: "bar",
+            data: { labels, datasets },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: "bottom",
+                        onClick: makeLegendClickHandler()
+                    },
+                    title: {
+                        display: true,
+                        text: numericColumns.join("、") + " 按 " + categoryColumn + " 分组的" +
+                            (mode === "sum" ? "合计" : "均值") + getChartFilterLabel()
+                    }
+                },
+                scales: {
+                    x: { title: { display: true, text: categoryColumn }, ticks: { maxRotation: 45 } },
+                    y: { title: { display: true, text: mode === "sum" ? "合计" : "均值" }, beginAtZero: false }
+                }
+            }
+        });
+        refreshLegendButtons();
+    }
+
+
+    function collectCategoryCounts(categoryColumn) {
+        const counts = new Map();
+        const data = dashboard.categorical_data || {};
+        const useRawRows = Boolean(activeIdentifierFilter || activeVariableFilters.length || activeTimeRange)
+            || !data[categoryColumn];
+        if (useRawRows) {
+            getFilteredChartRows().forEach(function (row) {
+                if (row[categoryColumn] === undefined) return;
+                const value = String(row[categoryColumn] ?? "缺失");
+                counts.set(value, (counts.get(value) || 0) + 1);
+            });
+            return counts;
+        }
+        const item = data[categoryColumn];
+        const labels = item.categories || [];
+        const values = item.counts || [];
+        labels.forEach(function (label, index) { counts.set(String(label), Number(values[index]) || 0); });
+        return counts;
+    }
+
+
+    function renderCategoryPieChart() {
+        const canvas = document.getElementById("categoryPieChart");
+        if (!canvas) return;
+        if (typeof Chart === "undefined") {
+            showChartMessage("categoryPieMessage", "图表组件未加载。");
+            return;
+        }
+        const categoryColumn = document.getElementById("categoricalVariable")?.value || "";
+        const titleNode = document.getElementById("categoryPieTitle");
+        if (!categoryColumn) {
+            showChartMessage("categoryPieMessage", "请选择一个分类变量，以查看各类别占比。");
+            if (titleNode) titleNode.textContent = "分类变量占比";
+            if (window.categoryPieChartInstance) { window.categoryPieChartInstance.destroy(); window.categoryPieChartInstance = null; }
+            refreshLegendButtons();
+            return;
+        }
+        const counts = collectCategoryCounts(categoryColumn);
+        const total = Array.from(counts.values()).reduce(function (sum, value) { return sum + value; }, 0);
+        if (!counts.size || total <= 0) {
+            showChartMessage("categoryPieMessage", "所选分类变量没有可展示的类别。");
+            if (window.categoryPieChartInstance) { window.categoryPieChartInstance.destroy(); window.categoryPieChartInstance = null; }
+            refreshLegendButtons();
+            return;
+        }
+        const mode = getCategoryPieMode();
+        const sorted = Array.from(counts.entries()).sort(function (a, b) { return b[1] - a[1]; });
+        const top = sorted.slice(0, 20);
+        const restCount = sorted.slice(20).reduce(function (sum, entry) { return sum + entry[1]; }, 0);
+        if (restCount > 0) top.push(["其他", restCount]);
+        const palette = ["#4f46e5", "#0ea5e9", "#16a34a", "#f59e0b", "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#64748b", "#ec4899"];
+        const labels = top.map(function (entry) { return entry[0]; });
+        const values = top.map(function (entry) {
+            return mode === "count" ? entry[1] : Number((entry[1] / total * 100).toFixed(2));
+        });
+        if (titleNode) {
+            titleNode.textContent = categoryColumn + " 占比（" + (mode === "count" ? "频数" : "百分比") + "）";
+        }
+        hideChartMessage("categoryPieMessage");
+        if (window.categoryPieChartInstance) window.categoryPieChartInstance.destroy();
+        window.categoryPieChartInstance = new Chart(canvas, {
+            type: "pie",
             data: {
-                labels: entries.map(([label]) => label),
+                labels,
                 datasets: [{
-                    label: numericColumn + " 均值",
-                    data: entries.map(([, values]) => values.reduce((a, b) => a + b, 0) / values.length),
-                    backgroundColor: "#0ea5e9",
-                    borderRadius: 5
+                    label: categoryColumn,
+                    data: values,
+                    backgroundColor: labels.map(function (label, index) { return palette[index % palette.length]; }),
+                    borderColor: "#ffffff",
+                    borderWidth: 2
                 }]
             },
             options: {
                 responsive: true, maintainAspectRatio: false,
-                plugins: { legend: { display: false }, title: { display: true, text: numericColumn + " 按 " + categoryColumn + " 分组的均值" + getChartFilterLabel() } },
-                scales: { x: { title: { display: true, text: categoryColumn }, ticks: { maxRotation: 45 } }, y: { title: { display: true, text: "均值" }, beginAtZero: false } }
+                plugins: {
+                    legend: {
+                        display: true,
+                        // 类别少时图例放右侧更清晰，类别多时改为底部避免挤爆右侧。
+                        position: labels.length > 15 ? "bottom" : "right",
+                        onClick: makePieLegendClickHandler()
+                    },
+                    title: {
+                        display: true,
+                        text: categoryColumn + "：各类别" + (mode === "count" ? "频数" : "占比") + getChartFilterLabel()
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function (context) {
+                                const label = context.label || "";
+                                const count = counts.get(label) || 0;
+                                const percent = total ? (count / total * 100) : 0;
+                                return mode === "count"
+                                    ? label + "：" + count.toLocaleString() + " 条（" + percent.toFixed(1) + "%）"
+                                    : label + "：" + percent.toFixed(1) + "%（" + count.toLocaleString() + " 条）";
+                            }
+                        }
+                    }
+                }
             }
         });
+        refreshLegendButtons();
     }
 
 
@@ -5301,6 +5592,7 @@
 
         renderCategoryChart();
         renderNumericByCategoryChart();
+        renderCategoryPieChart();
         refreshLegendButtons();
     }
 
