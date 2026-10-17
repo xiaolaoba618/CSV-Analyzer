@@ -801,6 +801,55 @@
             background: var(--surface);
         }
 
+        .legend-toolbar {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 18px;
+        }
+
+        .legend-toolbar-label {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .legend-toolbar-hint {
+            flex: 1 1 260px;
+            font-size: 12px;
+            line-height: 1.6;
+            color: var(--text-soft);
+        }
+
+        .legend-button {
+            padding: 7px 14px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--surface);
+            color: var(--text);
+            font: inherit;
+            font-size: 13px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .legend-button:hover:not(:disabled) {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        .legend-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .legend-toggle-button {
+            padding: 5px 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
         .chart-wrapper {
 
             position:
@@ -950,6 +999,35 @@
 
             font-size:
                 13px;
+        }
+
+
+        .control-stacked {
+
+            flex-direction:
+                column;
+
+            align-items:
+                flex-start;
+
+            gap:
+                4px;
+        }
+
+
+        .control-hint {
+
+            color:
+                var(--text-soft);
+
+            font-size:
+                12px;
+
+            line-height:
+                1.5;
+
+            max-width:
+                330px;
         }
 
 
@@ -2007,7 +2085,7 @@
             </h2>
 
             <p class="section-description">
-                选择一个或多个数据变量，查看其分布、变量关系以及时间变化；点击图例可隐藏或恢复对应变量/分组。
+                选择一个或多个数据变量，查看其分布、变量关系以及时间变化；点击图例可隐藏或恢复对应变量/分组，也可一键隐藏全部分组后再逐个挑出需要的分组。若同一时间存在多条记录，可用「同一时间存在多条记录时」选择按时间桶聚合（取均值）或直接相加（求和）。
             </p>
 
             <div id="identifierFilterStatus" class="filter-status">
@@ -2123,6 +2201,14 @@
                 <label for="distributionVariable">分布变量</label>
                 <select id="distributionVariable"></select>
             </div>
+            <div class="control control-stacked" id="timeAggregationControl" style="display:none;">
+                <label for="timeAggregation">同一时间存在多条记录时</label>
+                <select id="timeAggregation">
+                    <option value="mean">时间桶聚合（取均值）</option>
+                    <option value="sum">直接相加（求和）</option>
+                </select>
+                <span class="control-hint" id="timeAggregationHint"></span>
+            </div>
         </div>
 
 
@@ -2132,6 +2218,17 @@
             <label class="chart-toggle"><input type="checkbox" id="showTimeChart" checked> 时间变化</label>
             <label class="chart-toggle"><input type="checkbox" id="showNormalizedScatter" checked> 归一化变量关系</label>
             <label class="chart-toggle"><input type="checkbox" id="showNormalizedTime" checked> 归一化时间变化</label>
+        </div>
+
+        <div class="legend-toolbar">
+            <span class="legend-toolbar-label">分组图例</span>
+            <button type="button" class="legend-button" id="hideAllGroupDatasets">隐藏全部分组</button>
+            <button type="button" class="legend-button" id="showAllGroupDatasets">显示全部分组</button>
+            <button type="button" class="legend-button" id="invertGroupDatasets">反选</button>
+            <span class="legend-toolbar-hint">
+                分类取值过多时，可先「隐藏全部分组」，再点击下方图例逐个挑出需要的分组。
+                已选择「分类分组」变量时，点击图例会一次性隐藏／恢复该分组在所选变量下的全部数据。
+            </span>
         </div>
 
         <div class="chart-grid">
@@ -2162,8 +2259,11 @@
 
             <div class="card chart-card" id="scatterCard">
 
-                <div class="chart-title">
-                    变量关系
+                <div class="chart-title-row">
+                    <div class="chart-title">
+                        变量关系
+                    </div>
+                    <button type="button" class="legend-button legend-toggle-button" data-legend-toggle="scatterChart">隐藏全部</button>
                 </div>
 
                 <div class="chart-wrapper">
@@ -2185,8 +2285,11 @@
 
             <div class="card chart-card full" id="timeCard">
 
-                <div class="chart-title">
-                    时间变化（可按分类变量分组）
+                <div class="chart-title-row">
+                    <div class="chart-title">
+                        时间变化（可按分类变量分组）
+                    </div>
+                    <button type="button" class="legend-button legend-toggle-button" data-legend-toggle="timeChart">隐藏全部</button>
                 </div>
 
                 <div class="chart-wrapper">
@@ -2208,8 +2311,11 @@
 
             <div class="card chart-card full" id="normalizedScatterCard">
 
-                <div class="chart-title">
-                    归一化变量关系（0–1）
+                <div class="chart-title-row">
+                    <div class="chart-title">
+                        归一化变量关系（0–1）
+                    </div>
+                    <button type="button" class="legend-button legend-toggle-button" data-legend-toggle="normalizedScatterChart">隐藏全部</button>
                 </div>
 
                 <div class="chart-wrapper">
@@ -2226,8 +2332,11 @@
 
             <div class="card chart-card full" id="normalizedTimeCard">
 
-                <div class="chart-title">
-                    归一化时间变化（0–1，可按分类变量分组）
+                <div class="chart-title-row">
+                    <div class="chart-title">
+                        归一化时间变化（0–1，可按分类变量分组）
+                    </div>
+                    <button type="button" class="legend-button legend-toggle-button" data-legend-toggle="normalizedTimeChart">隐藏全部</button>
                 </div>
 
                 <div class="chart-wrapper">
@@ -4187,6 +4296,128 @@
 
 
     /* ========================================================
+       Legend visibility helpers
+       ======================================================== */
+
+    const LEGEND_MANAGED_CHARTS = {
+        scatterChart: function () { return scatterChart; },
+        timeChart: function () { return timeChart; },
+        normalizedScatterChart: function () { return normalizedScatterChart; },
+        normalizedTimeChart: function () { return normalizedTimeChart; }
+    };
+
+    function getLegendChart(name) {
+        const getter = LEGEND_MANAGED_CHARTS[name];
+        return getter ? getter() : null;
+    }
+
+    function hasLegendDatasets(chart) {
+        return Boolean(chart && chart.data && Array.isArray(chart.data.datasets) && chart.data.datasets.length);
+    }
+
+    function setAllDatasetsVisible(chart, visible) {
+        if (!hasLegendDatasets(chart)) return;
+        chart.data.datasets.forEach(function (dataset, index) {
+            chart.setDatasetVisibility(index, visible);
+        });
+        chart.update();
+    }
+
+    function isLegendAllHidden(chart) {
+        if (!hasLegendDatasets(chart)) return false;
+        return chart.data.datasets.every(function (dataset, index) {
+            return !chart.isDatasetVisible(index);
+        });
+    }
+
+    function toggleLegendDataset(chart, datasetIndex) {
+        if (!chart || !chart.data) return;
+        const dataset = chart.data.datasets[datasetIndex];
+        if (!dataset) return;
+        const group = dataset.__group;
+        const visible = !chart.isDatasetVisible(datasetIndex);
+        if (group) {
+            // 已选择分类分组变量时，同一分组会拆成多条数据集（每个变量一条），
+            // 点击图例按「分组」整体隐藏／恢复，而不是只切换其中一条。
+            chart.data.datasets.forEach(function (item, index) {
+                if (item.__group === group) {
+                    chart.setDatasetVisibility(index, visible);
+                }
+            });
+        } else {
+            chart.setDatasetVisibility(datasetIndex, visible);
+        }
+        chart.update();
+        refreshLegendButtons();
+    }
+
+    function makeLegendClickHandler() {
+        return function (event, legendItem, legend) {
+            toggleLegendDataset(legend.chart, legendItem.datasetIndex);
+        };
+    }
+
+    function refreshLegendButtons() {
+        if (typeof document === "undefined") return;
+        Object.keys(LEGEND_MANAGED_CHARTS).forEach(function (name) {
+            const chart = getLegendChart(name);
+            const buttons = document.querySelectorAll('[data-legend-toggle="' + name + '"]');
+            buttons.forEach(function (button) {
+                button.disabled = !hasLegendDatasets(chart);
+                button.textContent = isLegendAllHidden(chart) ? "显示全部" : "隐藏全部";
+            });
+        });
+    }
+
+    function eachLegendChart(callback) {
+        Object.keys(LEGEND_MANAGED_CHARTS).forEach(function (name) {
+            callback(getLegendChart(name));
+        });
+    }
+
+    function initializeLegendControls() {
+        const hideAll = document.getElementById("hideAllGroupDatasets");
+        const showAll = document.getElementById("showAllGroupDatasets");
+        const invert = document.getElementById("invertGroupDatasets");
+
+        if (hideAll) {
+            hideAll.addEventListener("click", function () {
+                eachLegendChart(function (chart) { setAllDatasetsVisible(chart, false); });
+                refreshLegendButtons();
+            });
+        }
+        if (showAll) {
+            showAll.addEventListener("click", function () {
+                eachLegendChart(function (chart) { setAllDatasetsVisible(chart, true); });
+                refreshLegendButtons();
+            });
+        }
+        if (invert) {
+            invert.addEventListener("click", function () {
+                eachLegendChart(function (chart) {
+                    if (!hasLegendDatasets(chart)) return;
+                    chart.data.datasets.forEach(function (dataset, index) {
+                        chart.setDatasetVisibility(index, !chart.isDatasetVisible(index));
+                    });
+                    chart.update();
+                });
+                refreshLegendButtons();
+            });
+        }
+        document.querySelectorAll("[data-legend-toggle]").forEach(function (button) {
+            button.addEventListener("click", function () {
+                const chart = getLegendChart(button.getAttribute("data-legend-toggle"));
+                if (!hasLegendDatasets(chart)) return;
+                // 已全部隐藏时点击为「显示全部」，否则为「隐藏全部」。
+                setAllDatasetsVisible(chart, isLegendAllHidden(chart));
+                refreshLegendButtons();
+            });
+        });
+        refreshLegendButtons();
+    }
+
+
+    /* ========================================================
        Distribution chart
        ======================================================== */
 
@@ -4389,6 +4620,8 @@
             const label = categoryColumn ? item.column + "｜" + item.group : item.column;
             return {
                 label: label + getChartFilterLabel(),
+                __column: item.column,
+                __group: categoryColumn ? item.group : "",
                 data: item.points,
                 backgroundColor: palette[index % palette.length],
                 borderColor: palette[index % palette.length],
@@ -4406,12 +4639,7 @@
                     legend: {
                         display: true,
                         position: "bottom",
-                        onClick: function (event, legendItem, legend) {
-                            const chart = legend.chart;
-                            const index = legendItem.datasetIndex;
-                            chart.setDatasetVisibility(index, !chart.isDatasetVisible(index));
-                            chart.update();
-                        }
+                        onClick: makeLegendClickHandler()
                     }
                 },
                 scales: {
@@ -4427,11 +4655,106 @@
        Time chart
        ======================================================== */
 
+    /* ========================================================
+       Time aggregation mode
+
+       When several rows share the same timestamp, the overall
+       series can either be averaged inside the time bucket
+       (mean) or summed directly (sum).
+       ======================================================== */
+
+    function getTimeAggregationMode() {
+        const select = document.getElementById("timeAggregation");
+        return select && select.value === "sum" ? "sum" : "mean";
+    }
+
+    function aggregateTimeValues(values, mode) {
+        if (!Array.isArray(values) || !values.length) return null;
+        const total = values.reduce(function (sum, value) { return sum + value; }, 0);
+        return mode === "sum" ? total : total / values.length;
+    }
+
+    function getTimeAggregationRows() {
+        const globalTimeData = dashboard.time_data || {};
+        const identifierTimeData = getIdentifierChartData();
+        const useIdentifierData = Boolean(activeIdentifierFilter && identifierTimeData);
+        const base = useIdentifierData
+            ? getActiveChartRows()
+            : (Array.isArray(globalTimeData.rows) ? globalTimeData.rows : []);
+        const isTimeIndex = useIdentifierData
+            ? identifierTimeData.time_type === "time_index"
+            : globalTimeData.time_type === "time_index";
+        const rows = applyRowFilters(base);
+        return {
+            rows: rows,
+            isTimeIndex: isTimeIndex,
+            truncated: useIdentifierData ? false : Boolean(globalTimeData.truncated),
+            sourceRowCount: useIdentifierData
+                ? rows.length
+                : (Number(globalTimeData.source_row_count) || rows.length)
+        };
+    }
+
+    function updateTimeAggregationHint() {
+        const hint = document.getElementById("timeAggregationHint");
+        if (!hint) return;
+        const info = getTimeAggregationRows();
+        const times = new Set();
+        let counted = 0;
+        info.rows.forEach(function (row) {
+            const raw = info.isTimeIndex ? row.time_index : row.datetime;
+            if (raw === undefined || raw === null || raw === "") return;
+            times.add(String(raw));
+            counted += 1;
+        });
+        if (!counted || !times.size) {
+            hint.textContent = "当前没有可聚合的时间序列数据。";
+            return;
+        }
+        let text;
+        if (counted > times.size) {
+            text =
+                "同一时间存在多条记录：" + counted.toLocaleString() + " 行 / " +
+                times.size.toLocaleString() + " 个时间点。未选分类分组时作用于总体曲线，已选时作用于每个分组的曲线；" +
+                "例如每行是某天单个商品的订单，选「直接相加」即可得到当天全部商品的合计。";
+        } else {
+            text =
+                "每个时间点只有一条记录（共 " + times.size.toLocaleString() +
+                " 个时间点），两种聚合方式结果相同。";
+        }
+        if (info.truncated && info.sourceRowCount > counted) {
+            text +=
+                " 注意：时间图当前基于 " + counted.toLocaleString() + " 行样本（源数据共 " +
+                info.sourceRowCount.toLocaleString() + " 行），求和得到的是样本合计；" +
+                "若需全量合计，请勾选「导出全部数据」后重新生成。";
+        }
+        hint.textContent = text;
+    }
+
+    function initializeTimeAggregation() {
+        const control = document.getElementById("timeAggregationControl");
+        const select = document.getElementById("timeAggregation");
+        if (!control || !select) return;
+        const globalTimeData = dashboard.time_data || {};
+        if (!globalTimeData.available && !getIdentifierChartData()) {
+            control.style.display = "none";
+            return;
+        }
+        control.style.display = "";
+        select.addEventListener("change", function () {
+            renderTimeChart();
+            renderNormalizedTimeChart();
+        });
+        updateTimeAggregationHint();
+    }
+
+
     function renderTimeChart() {
         const canvas = document.getElementById("timeChart");
         if (!canvas) return;
         if (typeof Chart === "undefined") {
             showChartMessage("timeMessage", "图表组件未加载。");
+            refreshLegendButtons();
             return;
         }
 
@@ -4452,6 +4775,7 @@
         if (!timeData.available || !rows.length || !numericColumns.length) {
             showChartMessage("timeMessage", "当前没有可用于时间序列分析的数据。");
             if (timeChart) { timeChart.destroy(); timeChart = null; }
+            refreshLegendButtons();
             return;
         }
 
@@ -4475,6 +4799,7 @@
         if (!grouped.size) {
             showChartMessage("timeMessage", "所选变量没有有效的时间序列数据。");
             if (timeChart) { timeChart.destroy(); timeChart = null; }
+            refreshLegendButtons();
             return;
         }
 
@@ -4487,6 +4812,7 @@
             return a.localeCompare(b);
         });
         const palette = ["#4f46e5", "#0ea5e9", "#16a34a", "#f59e0b", "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#64748b", "#ec4899"];
+        const aggregationMode = getTimeAggregationMode();
         const entries = Array.from(grouped.values()).sort((a, b) => {
             const na = Array.from(a.series.values()).reduce((sum, values) => sum + values.length, 0);
             const nb = Array.from(b.series.values()).reduce((sum, values) => sum + values.length, 0);
@@ -4495,9 +4821,10 @@
         const datasets = entries.map(function (item, index) {
             return {
                 label: (categoryColumn ? item.column + "｜" + item.group : item.column) + getChartFilterLabel(),
+                __column: item.column,
+                __group: categoryColumn ? item.group : "",
                 data: labels.map(function (label) {
-                    const values = item.series.get(label);
-                    return values?.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+                    return aggregateTimeValues(item.series.get(label), aggregationMode);
                 }),
                 borderColor: palette[index % palette.length],
                 backgroundColor: palette[index % palette.length],
@@ -4517,30 +4844,40 @@
                     legend: {
                         display: true,
                         position: "bottom",
-                        onClick: function (event, legendItem, legend) {
-                            const chart = legend.chart;
-                            const index = legendItem.datasetIndex;
-                            chart.setDatasetVisibility(index, !chart.isDatasetVisible(index));
-                            chart.update();
-                        }
+                        onClick: makeLegendClickHandler()
                     }
                 },
                 scales: {
                     x: { title: { display: true, text: timeData.time_column || timeData.datetime_column || "时间" }, ticks: { maxTicksLimit: 12, maxRotation: 45 } },
-                    y: { title: { display: true, text: "数值" }, beginAtZero: false }
+                    y: {
+                        title: {
+                            display: true,
+                            text: aggregationMode === "sum" ? "合计（同一时间相加）" : "均值（时间桶聚合）"
+                        },
+                        beginAtZero: false
+                    }
                 }
             }
         });
+        updateTimeAggregationHint();
+        refreshLegendButtons();
     }
 
 
-    function normalizeNumericValue(value, column) {
+    function normalizeNumericValue(value, column, overrideRange) {
         const number = Number(value);
         if (!Number.isFinite(number)) return null;
         const info = dashboard.statistics?.numeric?.[column];
         let min = Number(info?.min);
         let max = Number(info?.max);
-        if (!Number.isFinite(min) || !Number.isFinite(max)) {
+        if (
+            overrideRange &&
+            Number.isFinite(overrideRange.min) &&
+            Number.isFinite(overrideRange.max)
+        ) {
+            min = overrideRange.min;
+            max = overrideRange.max;
+        } else if (!Number.isFinite(min) || !Number.isFinite(max)) {
             const values = (dashboard.numeric_data?.rows || []).map(function (row) { return Number(row[column]); }).filter(Number.isFinite);
             if (!values.length) return null;
             min = Math.min(...values);
@@ -4595,6 +4932,8 @@
             const label = categoryColumn ? item.column + "｜" + item.group : item.column;
             return {
                 label: label + getChartFilterLabel(),
+                __column: item.column,
+                __group: categoryColumn ? item.group : "",
                 data: item.points,
                 backgroundColor: palette[index % palette.length],
                 borderColor: palette[index % palette.length],
@@ -4612,12 +4951,7 @@
                     legend: {
                         display: true,
                         position: "bottom",
-                        onClick: function (event, legendItem, legend) {
-                            const chart = legend.chart;
-                            const index = legendItem.datasetIndex;
-                            chart.setDatasetVisibility(index, !chart.isDatasetVisible(index));
-                            chart.update();
-                        }
+                        onClick: makeLegendClickHandler()
                     }
                 },
                 scales: {
@@ -4660,9 +4994,9 @@
         const grouped = new Map();
         numericColumns.forEach(function (numericColumn) {
             rows.forEach(function (row) {
-                const value = normalizeNumericValue(row[numericColumn], numericColumn);
+                const value = Number(row[numericColumn]);
                 const rawTime = isTimeIndex ? row.time_index : row.datetime;
-                if (rawTime === undefined || rawTime === null || value === null) return;
+                if (rawTime === undefined || rawTime === null || !Number.isFinite(value)) return;
                 const group = categoryColumn ? String(row[categoryColumn] ?? "缺失") : "";
                 const key = numericColumn + "\\u0000" + group;
                 if (!grouped.has(key)) grouped.set(key, { column: numericColumn, group: group, series: new Map() });
@@ -4693,12 +5027,42 @@
             const nb = Array.from(b.series.values()).reduce(function (sum, values) { return sum + values.length; }, 0);
             return nb - na;
         }).slice(0, 30);
-        const datasets = entries.map(function (item, index) {
+        const aggregationMode = getTimeAggregationMode();
+        const aggregated = entries.map(function (item) {
             return {
-                label: (categoryColumn ? item.column + "｜" + item.group : item.column) + getChartFilterLabel(),
-                data: labels.map(function (label) {
-                    const values = item.series.get(label);
-                    return values?.length ? values.reduce(function (a, b) { return a + b; }, 0) / values.length : null;
+                column: item.column,
+                group: item.group,
+                values: labels.map(function (label) {
+                    return aggregateTimeValues(item.series.get(label), aggregationMode);
+                })
+            };
+        });
+        /*
+         * Averaging commutes with the affine 0–1 normalization, so "mean" can
+         * reuse the row-level min/max. Summing does not: the daily total would
+         * saturate at 1. Therefore "sum" normalizes the aggregated values
+         * against their own min/max.
+         */
+        const sumRanges = new Map();
+        if (aggregationMode === "sum") {
+            aggregated.forEach(function (entry) {
+                const range = sumRanges.get(entry.column) || { min: Infinity, max: -Infinity };
+                entry.values.forEach(function (value) {
+                    if (!Number.isFinite(value)) return;
+                    if (value < range.min) range.min = value;
+                    if (value > range.max) range.max = value;
+                });
+                sumRanges.set(entry.column, range);
+            });
+        }
+        const datasets = aggregated.map(function (entry, index) {
+            const range = sumRanges.get(entry.column);
+            return {
+                label: (categoryColumn ? entry.column + "｜" + entry.group : entry.column) + getChartFilterLabel(),
+                __column: entry.column,
+                __group: categoryColumn ? entry.group : "",
+                data: entry.values.map(function (value) {
+                    return Number.isFinite(value) ? normalizeNumericValue(value, entry.column, range) : null;
                 }),
                 borderColor: palette[index % palette.length],
                 backgroundColor: palette[index % palette.length],
@@ -4718,17 +5082,19 @@
                     legend: {
                         display: true,
                         position: "bottom",
-                        onClick: function (event, legendItem, legend) {
-                            const chart = legend.chart;
-                            const index = legendItem.datasetIndex;
-                            chart.setDatasetVisibility(index, !chart.isDatasetVisible(index));
-                            chart.update();
-                        }
+                        onClick: makeLegendClickHandler()
                     }
                 },
                 scales: {
                     x: { title: { display: true, text: timeData.time_column || timeData.datetime_column || "时间" }, ticks: { maxTicksLimit: 12, maxRotation: 45 } },
-                    y: { min: 0, max: 1, title: { display: true, text: "归一化值" } }
+                    y: {
+                        min: 0,
+                        max: 1,
+                        title: {
+                            display: true,
+                            text: aggregationMode === "sum" ? "归一化值（基于合计）" : "归一化值（基于均值）"
+                        }
+                    }
                 }
             }
         });
@@ -4758,6 +5124,7 @@
             toggle.addEventListener("change", function () {
                 card.style.display = toggle.checked ? "" : "none";
                 renderInteractiveCharts();
+                refreshLegendButtons();
             });
             card.style.display = toggle.checked ? "" : "none";
         });
@@ -4879,6 +5246,7 @@
         if (!selectedColumns.length) {
             showChartMessage("distributionMessage", "请选择至少一个数据变量。");
             showChartMessage("scatterMessage", "请选择至少一个数据变量。");
+            refreshLegendButtons();
             return;
         }
 
@@ -4933,6 +5301,7 @@
 
         renderCategoryChart();
         renderNumericByCategoryChart();
+        refreshLegendButtons();
     }
 
 
@@ -5607,6 +5976,12 @@
 
 
             safeRun(
+                "Legend control initialization",
+                initializeLegendControls
+            );
+
+
+            safeRun(
                 "Image rendering",
                 renderImages
             );
@@ -5636,6 +6011,12 @@
              * Even if Chart.js is unavailable,
              * the rest of the dashboard still works.
              */
+
+            safeRun(
+                "Time aggregation initialization",
+                initializeTimeAggregation
+            );
+
 
             safeRun(
                 "Interactive chart rendering",

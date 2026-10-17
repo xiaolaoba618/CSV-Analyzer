@@ -14,6 +14,15 @@ from report.dashboard_generator import generate_dashboard
 from analysis_result import (build_analysis_result)
 PROJECT_ROOT = Path(__file__).resolve().parent
 
+def build_report_title(input_file):
+    """报告标题 = 数据文件名（不含扩展名）+ 「 报告」。"""
+    try:
+        stem = Path(input_file).stem.strip()
+    except (TypeError, ValueError):
+        stem = ""
+    return f"{stem} 报告" if stem else "数据分析报告"
+
+
 def analyze_csv(input_file, output_dir="output", progress_callback=None, variable_type_overrides=None, export_all_data=False):
     """执行完整的 CSV 分析流程。
 
@@ -136,6 +145,8 @@ def analyze_csv(input_file, output_dir="output", progress_callback=None, variabl
     report_progress("正在生成静态 HTML 分析报告...", 92)
     print("Generating HTML report...")
     report_path = (output_dir / "report.html")
+    # 两份报告的标题统一为「文件名 + 报告」，便于从标签页/标题快速区分不同数据集。
+    report_title = build_report_title(input_file)
     generate_report(
         profile=profile,
         statistics=statistics,
@@ -144,7 +155,8 @@ def analyze_csv(input_file, output_dir="output", progress_callback=None, variabl
         time_analysis=time_analysis,
         correlation=correlation,
         visualizations=visualizations,
-        output_path=report_path
+        output_path=report_path,
+        title=report_title
     )
     report_progress("静态分析报告生成完成", 95)
     if export_all_data:
@@ -165,7 +177,7 @@ def analyze_csv(input_file, output_dir="output", progress_callback=None, variabl
         visualizations=visualizations,
         output_path=dashboard_path,
         template_path=(PROJECT_ROOT / "report" / "dashboard_template.html"),
-        title="交互式数据分析报告",
+        title=report_title,
         export_all_data=export_all_data
     )
     report_progress("交互式 Dashboard 生成完成", 99)
