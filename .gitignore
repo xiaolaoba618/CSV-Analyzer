@@ -5,6 +5,7 @@ build/
 output/
 .idea/
 build_exe.py
+RELEASE.md
 *.csv
 __pycache__/
 *.pyc
