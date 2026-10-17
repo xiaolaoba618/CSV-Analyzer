@@ -2564,6 +2564,11 @@
                     分类变量频数分布
                 </div>
 
+                <div class="chart-control-row" id="categoryChartControlRow">
+                    <label for="categoryChartVariable">分类变量</label>
+                    <select id="categoryChartVariable"></select>
+                </div>
+
                 <div class="chart-wrapper">
 
                     <canvas
@@ -3701,6 +3706,26 @@
             categorySelect.appendChild(option);
         });
 
+        // 「分类变量频数分布」卡片内的独立选择器：留空表示跟随第一个分类变量，
+        // 这样即使没有勾选全局「分类分组」，分类卡片也能直接看到数据。
+        const categoryChartSelect = document.getElementById("categoryChartVariable");
+        if (categoryChartSelect) {
+            const autoOption = document.createElement("option");
+            autoOption.value = "";
+            autoOption.textContent = categoricalColumns.length
+                ? "自动（" + categoricalColumns[0] + "）"
+                : "没有分类变量";
+            categoryChartSelect.innerHTML = "";
+            categoryChartSelect.appendChild(autoOption);
+            categoricalColumns.forEach(function (column) {
+                const option = document.createElement("option");
+                option.value = column;
+                option.textContent = column;
+                categoryChartSelect.appendChild(option);
+            });
+            categoryChartSelect.value = "";
+        }
+
         initializeNumericMultiSelect();
         select1.addEventListener("change", function () {
             syncNumericMultiSelect();
@@ -3710,6 +3735,14 @@
         select2.addEventListener("change", renderInteractiveCharts);
         categorySelect.addEventListener("change", renderInteractiveCharts);
         distributionSelect.addEventListener("change", renderInteractiveCharts);
+        if (categoryChartSelect) {
+            categoryChartSelect.addEventListener("change", function () {
+                renderCategoryChart();
+                renderNumericByCategoryChart();
+                renderCategoryPieChart();
+                refreshLegendButtons();
+            });
+        }
 
         const statModeSelect = document.getElementById("categoryStatMode");
         const pieModeSelect = document.getElementById("categoryPieMode");
@@ -5581,7 +5614,7 @@
             showChartMessage("categoryMessage", "图表组件未加载。");
             return;
         }
-        const selected = document.getElementById("categoricalVariable")?.value || "";
+        const selected = getCategoryChartColumn();
         const data = dashboard.categorical_data || {};
         if (activeIdentifierFilter || activeVariableFilters.length || activeTimeRange) {
             const rows = getFilteredChartRows();
@@ -5628,6 +5661,26 @@
     }
 
 
+    /*
+     * 分类相关图表（频数分布／占比／按类别统计）使用哪个分类变量。
+     *
+     * 优先级：
+     *   1. 全局「分类分组」——保持与其他分组图的联动；
+     *   2. 卡片内「分类变量」下拉框；
+     *   3. 兜底取第一个分类变量。
+     *
+     * 第 3 步很关键：数据集只有分类变量、没有数值变量时，
+     * 全局下拉框默认停在「不分组」，若不做兜底，分类卡片就永远空着。
+     */
+    function getCategoryChartColumn() {
+        const shared = document.getElementById("categoricalVariable");
+        if (shared && shared.value) return shared.value;
+        const dedicated = document.getElementById("categoryChartVariable");
+        if (dedicated && dedicated.value) return dedicated.value;
+        const columns = Object.keys(dashboard.categorical_data || {});
+        return columns.length ? columns[0] : "";
+    }
+
     function getCategoryStatMode() {
         const select = document.getElementById("categoryStatMode");
         return select && select.value === "sum" ? "sum" : "mean";
@@ -5648,7 +5701,7 @@
         // 与散点图、时间变化图保持一致：使用「数据变量（可多选）」的选中结果，
         // 每个选中变量一条数据集，同一张图里并排对比。
         const numericColumns = getSelectedNumericColumns();
-        const categoryColumn = document.getElementById("categoricalVariable")?.value || "";
+        const categoryColumn = getCategoryChartColumn();
         const rows = getFilteredChartRows();
         if (!numericColumns.length || !categoryColumn) {
             showChartMessage("numericByCategoryMessage", "请同时选择数据变量和分类分组。");
@@ -5750,7 +5803,7 @@
             showChartMessage("categoryPieMessage", "图表组件未加载。");
             return;
         }
-        const categoryColumn = document.getElementById("categoricalVariable")?.value || "";
+        const categoryColumn = getCategoryChartColumn();
         const titleNode = document.getElementById("categoryPieTitle");
         if (!categoryColumn) {
             showChartMessage("categoryPieMessage", "请选择一个分类变量，以查看各类别占比。");
@@ -5831,19 +5884,30 @@
         const selectedColumns = getSelectedNumericColumns();
         const column2 = select2?.value || "";
 
-        if (!selectedColumns.length) {
-            showChartMessage("distributionMessage", "请选择至少一个数据变量。");
-            showChartMessage("scatterMessage", "请选择至少一个数据变量。");
-            refreshLegendButtons();
-            return;
-        }
-
         const distributionColumn = document.getElementById("distributionVariable")?.value || selectedColumns[0];
         const showDistribution = document.getElementById("showDistributionChart")?.checked !== false;
         const showScatter = document.getElementById("showScatterChart")?.checked !== false;
         const showTime = document.getElementById("showTimeChart")?.checked !== false;
         const showNormalizedScatter = document.getElementById("showNormalizedScatter")?.checked !== false;
         const showNormalizedTime = document.getElementById("showNormalizedTime")?.checked !== false;
+
+        /*
+         * 没有勾选任何数据变量（典型场景：数据集根本没有数值变量）时，
+         * 只清理数值相关的图表，不能整体 return——否则分类相关的三张图
+         * 也会被一起跳过，只剩一张空卡片。
+         */
+        if (!selectedColumns.length) {
+            const kinds = getAvailableDataKinds();
+            if (kinds.hasNumeric) {
+                showChartMessage("distributionMessage", "请选择至少一个数据变量。");
+                showChartMessage("scatterMessage", "请选择至少一个数据变量。");
+            }
+            if (distributionChart) { distributionChart.destroy(); distributionChart = null; }
+            if (scatterChart) { scatterChart.destroy(); scatterChart = null; }
+            if (timeChart) { timeChart.destroy(); timeChart = null; }
+            if (normalizedScatterChart) { normalizedScatterChart.destroy(); normalizedScatterChart = null; }
+            if (normalizedTimeChart) { normalizedTimeChart.destroy(); normalizedTimeChart = null; }
+        } else {
 
         if (showDistribution) {
             try {
@@ -5887,6 +5951,9 @@
         if (showNormalizedTime) renderNormalizedTimeChart();
         else if (normalizedTimeChart) { normalizedTimeChart.destroy(); normalizedTimeChart = null; }
 
+        }
+
+        // 分类相关图表只依赖分类变量，始终尝试渲染。
         renderCategoryChart();
         renderNumericByCategoryChart();
         renderCategoryPieChart();
