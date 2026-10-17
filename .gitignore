@@ -1,6 +1,7 @@
 .venv/
 .workbuddy/
 dist/
+build/
 output/
 .idea/
 build_exe.py
