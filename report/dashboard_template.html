@@ -2424,7 +2424,7 @@
             <span class="legend-toolbar-hint">
                 分类取值过多时，可先「隐藏全部分组」，再点击下方图例逐个挑出需要的分组。
                 已选择「分类分组」变量时，点击图例会一次性隐藏／恢复该分组在所选变量下的全部数据。
-                「数值变量按类别统计」按数据变量显隐，「分类变量占比」按扇区显隐；这里的批量操作对它们同样生效。
+                「数值分布」按分组堆叠，「数值变量按类别统计」按数据变量显隐，「分类变量占比」按扇区显隐；这里的批量操作对它们同样生效。
             </span>
         </div>
 
@@ -2433,13 +2433,17 @@
 
             <div class="card chart-card" id="distributionCard">
 
-                <div class="chart-title">
-                    数值分布
+                <div class="chart-title-row">
+                    <div class="chart-title">
+                        数值分布
+                    </div>
+                    <button type="button" class="legend-button legend-toggle-button" data-legend-toggle="distributionChart">隐藏全部</button>
                 </div>
 
                 <div class="chart-control-row" id="distributionControlRow">
                     <label for="distributionVariable">分布变量</label>
                     <select id="distributionVariable"></select>
+                    <span class="chart-control-hint">已选择「分类分组」时按分组堆叠：占比大的在下、占比小的在上，图例可逐个筛选分组。</span>
                 </div>
 
                 <div class="chart-wrapper">
@@ -2471,7 +2475,7 @@
                 <div class="chart-control-row" id="scatterControlRow">
                     <label for="numericVariable2">对比变量</label>
                     <select id="numericVariable2"></select>
-                    <span class="chart-control-hint">归一化变量关系图共用此对比变量。</span>
+                    <span class="chart-control-hint">归一化变量关系图共用此对比变量。与「数据变量」选中同一个变量时，改画该变量按分组堆叠的一维分布散点。</span>
                 </div>
 
                 <div class="chart-wrapper">
@@ -4443,129 +4447,228 @@
        Histogram
        ======================================================== */
 
+    /*
+     * 交互图表共用的配色；颜色顺序与数据集顺序一一对应，
+     * 图例隐藏／恢复某个分组时颜色不会跟着变。
+     */
+    const CHART_PALETTE = [
+        "#4f46e5", "#0ea5e9", "#16a34a", "#f59e0b", "#ef4444",
+        "#8b5cf6", "#14b8a6", "#f97316", "#64748b", "#ec4899"
+    ];
+
+    /*
+     * 图例项过多会挤没绘图区，这里统一限制分组数量；
+     * 超出的部分合并成一个「其他」分组，所有记录仍然落在图上，而不是被丢掉。
+     */
+    const MAX_CHART_GROUPS = 15;
+
+    /*
+     * 按记录数降序取前 limit 个分组，其余合并为一个「其他」分组。
+     * grouped 为 Map(分组名 -> 数组)，返回 [[分组名, 数组], ...]。
+     */
+    function collectTopGroups(grouped, limit, mergeLabel) {
+        const entries = Array.from(grouped.entries())
+            .sort(function (a, b) { return b[1].length - a[1].length; });
+        if (entries.length <= limit) return entries;
+        const kept = entries.slice(0, limit - 1);
+        const merged = [];
+        entries.slice(limit - 1).forEach(function (entry) {
+            for (let i = 0; i < entry[1].length; i++) merged.push(entry[1][i]);
+        });
+        kept.push([mergeLabel + "（" + (entries.length - limit + 1) + " 个分组）", merged]);
+        return kept;
+    }
+
+    function hexToRgba(hex, alpha) {
+        const value = String(hex).replace("#", "");
+        const full = value.length === 3
+            ? value.split("").map(function (char) { return char + char; }).join("")
+            : value;
+        const int = parseInt(full, 16);
+        if (!Number.isFinite(int)) return String(hex);
+        const red = (int >> 16) & 255;
+        const green = (int >> 8) & 255;
+        const blue = int & 255;
+        return "rgba(" + red + ", " + green + ", " + blue + ", " + alpha + ")";
+    }
+
+    /*
+     * 按统一的分箱布局把一批数值落进区间。
+     * 堆叠直方图里所有分组共用同一套边界，各分组的计数才是可比的。
+     */
+    function countIntoBins(values, layout) {
+        const counts = new Array(layout.binCount).fill(0);
+        if (!layout.binCount) return counts;
+        for (let i = 0; i < values.length; i++) {
+            const value = values[i];
+            let index = layout.width > 0 ? Math.floor((value - layout.min) / layout.width) : 0;
+            if (!Number.isFinite(index) || index < 0) index = 0;
+            if (index >= layout.binCount) index = layout.binCount - 1;
+            counts[index]++;
+        }
+        return counts;
+    }
+
+    /*
+     * 一维散点（strip plot）。
+     * 对比变量和数据变量选中同一个变量时，二维散点会退化成一条直线，
+     * 以前的做法是直接不渲染。现在改画一维散点：变量取值放在 X 轴，
+     * 每个分类分组在 Y 轴上占一条横带，带内做竖向抖动，
+     * 于是可以直接比较各分组在这个变量上的分布范围与疏密。
+     */
+    function createStripJitter(seed) {
+        let state = seed >>> 0 || 1;
+        return function () {
+            state = (state * 1664525 + 1013904223) >>> 0;
+            return state / 4294967296 - 0.5;
+        };
+    }
+
+    function buildStripDatasets(column, categoryColumn, rows, options) {
+        options = options || {};
+        const grouped = new Map();
+        rows.forEach(function (row) {
+            const raw = Number(row[column]);
+            if (!Number.isFinite(raw)) return;
+            const value = options.normalized ? normalizeNumericValue(raw, column) : raw;
+            if (value === null || !Number.isFinite(value)) return;
+            const group = categoryColumn ? String(row[categoryColumn] ?? "缺失") : column;
+            if (!grouped.has(group)) grouped.set(group, []);
+            grouped.get(group).push(value);
+        });
+        if (!grouped.size) return null;
+        const entries = collectTopGroups(grouped, MAX_CHART_GROUPS, "其他分类");
+        const jitter = createStripJitter(20240917);
+        return {
+            hasGroups: Boolean(categoryColumn),
+            groupLabels: entries.map(function (entry) { return entry[0]; }),
+            datasets: entries.map(function (entry, index) {
+                return {
+                    label: entry[0] + (options.filterLabel || ""),
+                    __column: column,
+                    __group: categoryColumn ? entry[0] : "",
+                    data: entry[1].map(function (value) {
+                        return { x: value, y: index + jitter() * 0.62 };
+                    }),
+                    backgroundColor: hexToRgba(CHART_PALETTE[index % CHART_PALETTE.length], 0.72),
+                    borderColor: CHART_PALETTE[index % CHART_PALETTE.length],
+                    borderWidth: 0,
+                    pointRadius: 2.5,
+                    pointHoverRadius: 5
+                };
+            })
+        };
+    }
+
+    /*
+     * 一维散点的 Y 轴：有分类分组时每条横带显示一个分组名，
+     * 没有分组时整张图只有一条带，Y 轴没有信息量，直接隐藏。
+     */
+    function makeStripYAxis(strip) {
+        if (!strip.hasGroups) {
+            return { display: false, min: -1, max: 1 };
+        }
+        return {
+            min: -0.6,
+            max: strip.groupLabels.length - 1 + 0.6,
+            title: { display: true, text: "分类分组" },
+            ticks: {
+                stepSize: 1,
+                autoSkip: false,
+                font: { size: 11 },
+                callback: function (value) {
+                    return strip.groupLabels[Math.round(Number(value))] || "";
+                }
+            },
+            grid: { display: false }
+        };
+    }
+
     function createHistogram(
         values,
         bins
     ) {
 
-        if (
-            !values.length
-        ) {
-
-            return {
-                labels: [],
-                counts: []
-            };
-        }
-
-
-        bins =
-            bins || 20;
-
-
-        const min =
-            Math.min(
-                ...values
-            );
-
-
-        const max =
-            Math.max(
-                ...values
-            );
-
-
-        if (
-            min === max
-        ) {
-
-            return {
-
-                labels: [
-                    String(min)
-                ],
-
-                counts: [
-                    values.length
-                ]
-
-            };
-        }
-
-
-        const width =
-            (max - min) / bins;
-
-
-        const counts =
-            new Array(
-                bins
-            ).fill(0);
-
-
-        values.forEach(
-            function (value) {
-
-                let index =
-                    Math.floor(
-                        (
-                            value -
-                            min
-                        ) / width
-                    );
-
-
-                if (
-                    index < 0
-                ) {
-
-                    index = 0;
-                }
-
-
-                if (
-                    index >= bins
-                ) {
-
-                    index =
-                        bins - 1;
-                }
-
-
-                counts[index]++;
-
+        const empty = {
+            labels: [],
+            counts: [],
+            layout: {
+                min: 0,
+                max: 0,
+                width: 0,
+                binCount: 0
             }
-        );
+        };
 
+        if (!values.length) {
+            return empty;
+        }
 
-        const labels =
-            counts.map(
-                function (_, index) {
+        bins = bins || 20;
 
-                    const left =
-                        min +
-                        index *
-                        width;
+        let min = Infinity;
+        let max = -Infinity;
 
+        for (let i = 0; i < values.length; i++) {
 
-                    const right =
-                        left +
-                        width;
+            const value = values[i];
 
+            if (!Number.isFinite(value)) {
+                continue;
+            }
 
-                    return (
-                        left.toFixed(2) +
-                        " – " +
-                        right.toFixed(2)
-                    );
+            if (value < min) { min = value; }
+            if (value > max) { max = value; }
 
+        }
+
+        if (!Number.isFinite(min) || !Number.isFinite(max)) {
+            return empty;
+        }
+
+        if (min === max) {
+
+            return {
+                labels: [String(min)],
+                counts: [values.length],
+                layout: {
+                    min: min,
+                    max: max,
+                    width: 0,
+                    binCount: 1
                 }
+            };
+
+        }
+
+        const width = (max - min) / bins;
+
+        const labels = [];
+
+        for (let index = 0; index < bins; index++) {
+
+            const left = min + index * width;
+            const right = left + width;
+
+            labels.push(
+                left.toFixed(2) +
+                " – " +
+                right.toFixed(2)
             );
 
+        }
+
+        const layout = {
+            min: min,
+            max: max,
+            width: width,
+            binCount: bins
+        };
 
         return {
-            labels,
-            counts
+            labels: labels,
+            counts: countIntoBins(values, layout),
+            layout: layout
         };
 
     }
@@ -4600,6 +4703,7 @@
        ======================================================== */
 
     const LEGEND_MANAGED_CHARTS = {
+        distributionChart: function () { return distributionChart; },
         scatterChart: function () { return scatterChart; },
         timeChart: function () { return timeChart; },
         normalizedScatterChart: function () { return normalizedScatterChart; },
@@ -4858,7 +4962,8 @@
        ======================================================== */
 
     function renderDistributionChart(
-        column
+        column,
+        categoryColumn
     ) {
 
         const canvas =
@@ -4886,20 +4991,53 @@
         }
 
 
-        const values =
-            getNumericValues(
-                column
-            );
+        categoryColumn = categoryColumn || "";
+
+        const values = [];
+
+        const groupedValues = new Map();
+
+        getFilteredChartRows().forEach(
+            function (row) {
+
+                const value = Number(row[column]);
+
+                if (!Number.isFinite(value)) {
+                    return;
+                }
+
+                values.push(value);
+
+                if (!categoryColumn) {
+                    return;
+                }
+
+                const group = String(row[categoryColumn] ?? "缺失");
+
+                if (!groupedValues.has(group)) {
+                    groupedValues.set(group, []);
+                }
+
+                groupedValues.get(group).push(value);
+
+            }
+        );
 
 
-        if (
-            !values.length
-        ) {
+        if (distributionChart) {
+            distributionChart.destroy();
+            distributionChart = null;
+        }
+
+
+        if (!values.length) {
 
             showChartMessage(
                 "distributionMessage",
                 "当前变量没有有效数值数据。"
             );
+
+            refreshLegendButtons();
 
             return;
         }
@@ -4917,15 +5055,86 @@
             );
 
 
-        if (
-            distributionChart
-        ) {
+        const layout =
+            histogram.layout;
 
-            distributionChart.destroy();
 
-            distributionChart =
-                null;
+        const filterLabel =
+            getChartFilterLabel();
+
+
+        let datasets = [];
+
+        if (categoryColumn && groupedValues.size) {
+
+            /*
+             * 已选择分类分组时，把每个区间切成若干段：段的高度是该分组落在
+             * 这个区间里的记录数，等价于它占该区间的比例。
+             * Chart.js 的堆叠是按数据集序号升序往上累加的，序号越小越靠底部，
+             * 所以这里按记录数降序排列——占比大的分组在下、占比小的在上，
+             * 堆叠顺序稳定，和其余图表「大组在前」的顺序保持一致。
+             */
+            datasets =
+                collectTopGroups(
+                    groupedValues,
+                    MAX_CHART_GROUPS,
+                    "其他分类"
+                ).map(
+                    function (entry, index) {
+
+                        return {
+
+                            label: entry[0] + filterLabel,
+
+                            __group: entry[0],
+
+                            data: countIntoBins(entry[1], layout),
+
+                            backgroundColor:
+                                CHART_PALETTE[index % CHART_PALETTE.length],
+
+                            borderWidth: 0,
+
+                            borderRadius: 2,
+
+                            stack: "distribution",
+
+                            order: index
+
+                        };
+
+                    }
+                );
+
+        } else {
+
+            datasets = [
+
+                {
+
+                    label: column + filterLabel,
+
+                    data: histogram.counts,
+
+                    backgroundColor: CHART_PALETTE[0],
+
+                    borderWidth: 0,
+
+                    borderRadius: 5,
+
+                    stack: "distribution",
+
+                    order: 0
+
+                }
+
+            ];
+
         }
+
+
+        /* 只有一个分组（或没选分组）时图例没有信息量，隐藏掉。 */
+        const stacked = datasets.length > 1;
 
 
         distributionChart =
@@ -4933,49 +5142,69 @@
                 canvas,
                 {
 
-                    type:
-                        "bar",
+                    type: "bar",
 
                     data: {
 
-                        labels:
-                            histogram.labels,
+                        labels: histogram.labels,
 
-                        datasets: [
-
-                            {
-
-                                label:
-                                    column + getChartFilterLabel(),
-
-                                data:
-                                    histogram.counts,
-
-                                borderWidth:
-                                    0,
-
-                                borderRadius:
-                                    5
-
-                            }
-
-                        ]
+                        datasets: datasets
 
                     },
 
-
                     options: {
 
-                        responsive:
-                            true,
+                        responsive: true,
 
-                        maintainAspectRatio:
-                            false,
+                        maintainAspectRatio: false,
 
                         plugins: {
 
-                            legend: {
-                                display: false
+                            legend: stacked
+                                ? makeLegendConfig()
+                                : { display: false },
+
+                            title: {
+
+                                display: true,
+
+                                text: column + " 的分布" +
+                                    (stacked
+                                        ? "（按 " + categoryColumn + " 堆叠）"
+                                        : "") +
+                                    filterLabel
+
+                            },
+
+                            tooltip: {
+
+                                callbacks: {
+
+                                    label: function (context) {
+
+                                        const total = context.chart.data.datasets.reduce(
+                                            function (sum, dataset) {
+                                                const value = Number(dataset.data[context.dataIndex]);
+                                                return sum + (Number.isFinite(value) ? value : 0);
+                                            },
+                                            0
+                                        );
+
+                                        const value = Number(context.parsed.y) || 0;
+
+                                        const percent = total
+                                            ? (value / total * 100)
+                                            : 0;
+
+                                        return context.dataset.label + "：" +
+                                            value.toLocaleString() + " 条" +
+                                            "（占该区间 " +
+                                            percent.toFixed(1) + "%）";
+
+                                    }
+
+                                }
+
                             }
 
                         },
@@ -4984,10 +5213,11 @@
 
                             x: {
 
+                                stacked: true,
+
                                 ticks: {
 
-                                    maxRotation:
-                                        45
+                                    maxRotation: 45
 
                                 }
 
@@ -4995,8 +5225,17 @@
 
                             y: {
 
-                                beginAtZero:
-                                    true
+                                stacked: true,
+
+                                beginAtZero: true,
+
+                                title: {
+
+                                    display: true,
+
+                                    text: "记录数"
+
+                                }
 
                             }
 
@@ -5006,6 +5245,9 @@
 
                 }
             );
+
+
+        refreshLegendButtons();
 
     }
 
@@ -5022,15 +5264,57 @@
             return;
         }
 
+        if (scatterChart) { scatterChart.destroy(); scatterChart = null; }
+
         const rows = getFilteredChartRows();
-        const columns = yColumns.filter(function (column) { return column && column !== xColumn; });
-        if (!xColumn || !columns.length) {
-            showChartMessage("scatterMessage", "请选择至少一个不同于对比变量的数据变量。");
-            if (scatterChart) { scatterChart.destroy(); scatterChart = null; }
+        const filterLabel = getChartFilterLabel();
+
+        /*
+         * 对比变量和数据变量选中同一个变量时（数据集里只有一个数值变量，
+         * 或者就是只想单独看某个变量的分布），二维散点会退化成一条 45°
+         * 直线，原来的做法是干脆不渲染。这里改画一维散点（strip plot）：
+         * X 轴是变量取值，Y 轴按分类分组铺成一条条横带，带内做竖向抖动，
+         * 于是可以直接比较各分组在这个变量上的分布范围与疏密。
+         */
+        if (xColumn && yColumns.indexOf(xColumn) >= 0) {
+            const strip = buildStripDatasets(xColumn, categoryColumn, rows, { filterLabel: filterLabel });
+            if (!strip) {
+                showChartMessage("scatterMessage", "所选变量没有足够的有效数据。");
+                refreshLegendButtons();
+                return;
+            }
+            hideChartMessage("scatterMessage");
+            scatterChart = new Chart(canvas, {
+                type: "scatter",
+                data: { datasets: strip.datasets },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: {
+                        legend: makeLegendConfig(),
+                        title: {
+                            display: true,
+                            text: xColumn + " 的一维分布" +
+                                (categoryColumn ? "（按 " + categoryColumn + " 分组）" : "") +
+                                filterLabel
+                        }
+                    },
+                    scales: {
+                        x: { title: { display: true, text: xColumn } },
+                        y: makeStripYAxis(strip)
+                    }
+                }
+            });
+            refreshLegendButtons();
             return;
         }
 
-        const palette = ["#4f46e5", "#0ea5e9", "#16a34a", "#f59e0b", "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#64748b", "#ec4899"];
+        const columns = yColumns.filter(function (column) { return column && column !== xColumn; });
+        if (!xColumn || !columns.length) {
+            showChartMessage("scatterMessage", "请选择至少一个不同于对比变量的数据变量。");
+            refreshLegendButtons();
+            return;
+        }
+
         const groups = new Map();
         columns.forEach(function (column) {
             rows.forEach(function (row) {
@@ -5046,21 +5330,20 @@
 
         if (!groups.size) {
             showChartMessage("scatterMessage", "所选变量之间没有足够的有效数据。");
-            if (scatterChart) { scatterChart.destroy(); scatterChart = null; }
+            refreshLegendButtons();
             return;
         }
         hideChartMessage("scatterMessage");
-        if (scatterChart) scatterChart.destroy();
         const entries = Array.from(groups.values()).sort((a, b) => b.points.length - a.points.length).slice(0, 30);
         const datasets = entries.map(function (item, index) {
             const label = categoryColumn ? item.column + "｜" + item.group : item.column;
             return {
-                label: label + getChartFilterLabel(),
+                label: label + filterLabel,
                 __column: item.column,
                 __group: categoryColumn ? item.group : "",
                 data: item.points,
-                backgroundColor: palette[index % palette.length],
-                borderColor: palette[index % palette.length],
+                backgroundColor: CHART_PALETTE[index % CHART_PALETTE.length],
+                borderColor: CHART_PALETTE[index % CHART_PALETTE.length],
                 pointRadius: 3,
                 pointHoverRadius: 6
             };
@@ -5080,6 +5363,7 @@
                 }
             }
         });
+        refreshLegendButtons();
     }
 
 
@@ -5379,18 +5663,61 @@
             showChartMessage("normalizedScatterMessage", "图表组件未加载。");
             return;
         }
+        if (normalizedScatterChart) { normalizedScatterChart.destroy(); normalizedScatterChart = null; }
 
         const rows = getFilteredChartRows();
         const xColumn = document.getElementById("numericVariable2")?.value || "";
-        const yColumns = getSelectedNumericColumns().filter(function (column) { return column && column !== xColumn; });
+        const selectedColumns = getSelectedNumericColumns();
         const categoryColumn = document.getElementById("categoricalVariable")?.value || "";
-        if (!xColumn || !yColumns.length) {
-            showChartMessage("normalizedScatterMessage", "请选择至少一个不同于对比变量的数据变量。");
-            if (normalizedScatterChart) { normalizedScatterChart.destroy(); normalizedScatterChart = null; }
+        const filterLabel = getChartFilterLabel();
+        const xTitle = xColumn + "（归一化）";
+
+        /*
+         * 与「变量关系」图一致：对比变量和数据变量选中同一个变量时，
+         * 改画归一化后的一维散点，每个分类分组占一条横带。
+         */
+        if (xColumn && selectedColumns.indexOf(xColumn) >= 0) {
+            const strip = buildStripDatasets(xColumn, categoryColumn, rows, {
+                normalized: true,
+                filterLabel: filterLabel
+            });
+            if (!strip) {
+                showChartMessage("normalizedScatterMessage", "所选变量没有足够的有效数据。");
+                refreshLegendButtons();
+                return;
+            }
+            hideChartMessage("normalizedScatterMessage");
+            normalizedScatterChart = new Chart(canvas, {
+                type: "scatter",
+                data: { datasets: strip.datasets },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: {
+                        legend: makeLegendConfig(),
+                        title: {
+                            display: true,
+                            text: xColumn + " 的一维分布（归一化）" +
+                                (categoryColumn ? "（按 " + categoryColumn + " 分组）" : "") +
+                                filterLabel
+                        }
+                    },
+                    scales: {
+                        x: { min: 0, max: 1, title: { display: true, text: xTitle } },
+                        y: makeStripYAxis(strip)
+                    }
+                }
+            });
+            refreshLegendButtons();
             return;
         }
 
-        const palette = ["#4f46e5", "#0ea5e9", "#16a34a", "#f59e0b", "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#64748b", "#ec4899"];
+        const yColumns = selectedColumns.filter(function (column) { return column && column !== xColumn; });
+        if (!xColumn || !yColumns.length) {
+            showChartMessage("normalizedScatterMessage", "请选择至少一个不同于对比变量的数据变量。");
+            refreshLegendButtons();
+            return;
+        }
+
         const groups = new Map();
         yColumns.forEach(function (column) {
             rows.forEach(function (row) {
@@ -5398,7 +5725,7 @@
                 const y = normalizeNumericValue(row[column], column);
                 if (x === null || y === null) return;
                 const group = categoryColumn ? String(row[categoryColumn] ?? "缺失") : "全部数据";
-                const key = column + "\\u0000" + group;
+                const key = column + "\u0000" + group;
                 if (!groups.has(key)) groups.set(key, { column: column, group: group, points: [] });
                 groups.get(key).points.push({ x, y });
             });
@@ -5406,22 +5733,21 @@
 
         if (!groups.size) {
             showChartMessage("normalizedScatterMessage", "所选变量之间没有足够的有效数据。");
-            if (normalizedScatterChart) { normalizedScatterChart.destroy(); normalizedScatterChart = null; }
+            refreshLegendButtons();
             return;
         }
 
         hideChartMessage("normalizedScatterMessage");
-        if (normalizedScatterChart) normalizedScatterChart.destroy();
         const entries = Array.from(groups.values()).sort(function (a, b) { return b.points.length - a.points.length; }).slice(0, 30);
         const datasets = entries.map(function (item, index) {
             const label = categoryColumn ? item.column + "｜" + item.group : item.column;
             return {
-                label: label + getChartFilterLabel(),
+                label: label + filterLabel,
                 __column: item.column,
                 __group: categoryColumn ? item.group : "",
                 data: item.points,
-                backgroundColor: palette[index % palette.length],
-                borderColor: palette[index % palette.length],
+                backgroundColor: CHART_PALETTE[index % CHART_PALETTE.length],
+                borderColor: CHART_PALETTE[index % CHART_PALETTE.length],
                 pointRadius: 3,
                 pointHoverRadius: 6
             };
@@ -5436,11 +5762,12 @@
                     legend: makeLegendConfig()
                 },
                 scales: {
-                    x: { min: 0, max: 1, title: { display: true, text: xColumn + "（归一化）" } },
+                    x: { min: 0, max: 1, title: { display: true, text: xTitle } },
                     y: { min: 0, max: 1, title: { display: true, text: "归一化值" } }
                 }
             }
         });
+        refreshLegendButtons();
     }
 
     function renderNormalizedTimeChart() {
@@ -5885,6 +6212,8 @@
         const column2 = select2?.value || "";
 
         const distributionColumn = document.getElementById("distributionVariable")?.value || selectedColumns[0];
+        // 数值分布图同样跟随全局「分类分组」，改按分组堆叠显示区间占比。
+        const distributionCategoryColumn = document.getElementById("categoricalVariable")?.value || "";
         const showDistribution = document.getElementById("showDistributionChart")?.checked !== false;
         const showScatter = document.getElementById("showScatterChart")?.checked !== false;
         const showTime = document.getElementById("showTimeChart")?.checked !== false;
@@ -5911,7 +6240,7 @@
 
         if (showDistribution) {
             try {
-                renderDistributionChart(distributionColumn);
+                renderDistributionChart(distributionColumn, distributionCategoryColumn);
             } catch (error) {
                 console.error("Distribution chart error:", error);
                 showChartMessage("distributionMessage", "数值分布图生成失败。");
