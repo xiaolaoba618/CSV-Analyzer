@@ -7,7 +7,6 @@ import numpy as np
 import pandas as pd
 MAX_CATEGORIES = 15
 MAX_HEATMAP_COLUMNS = 30
-MAX_SCATTER_POINTS = 10000
 MAX_SCATTER_VARIABLES = 10
 
 def configure_chinese_font():
@@ -44,6 +43,9 @@ def configure_chinese_font():
 # 读取一次，然后转成 base64 内嵌到 HTML 中。因此图表本身不需要长期驻留在本地。
 # 这里统一把图表写入系统临时目录，并在进程退出时自动删除，
 # 这样既不影响报告生成，也不会在项目目录里残留 PNG 文件。
+#
+# 注意：静态报告（report.html）的统计图一律基于**完整数据集**绘制，不再抽样，
+# 与「导出全部数据」选项无关——该选项只影响交互式报告的载荷大小。
 _FIGURE_DIRECTORY = None
 
 def _remove_figure_directory(directory):
@@ -75,17 +77,6 @@ def _safe_filename(name):
     if not result:
         result = "unnamed"
     return result
-
-def _sample_series(series, max_points=MAX_SCATTER_POINTS):
-    series = series.dropna()
-    if len(series) <= max_points:
-        return series
-    return series.sample(n=max_points, random_state=42)
-
-def _sample_dataframe(df, max_points=MAX_SCATTER_POINTS):
-    if len(df) <= max_points:
-        return df
-    return df.sample(n=max_points, random_state=42)
 
 def _get_columns_by_type(df, variable_types, allowed_types):
     if variable_types is None:
@@ -135,7 +126,6 @@ def create_histogram(df, column, output_dir, bins=30):
     series = (df[column].replace([np.inf, -np.inf], np.nan).dropna())
     if len(series) == 0:
         return None
-    series = _sample_series(series)
     if series.nunique() <= 1:
         return None
     mean_value = series.mean()
@@ -177,7 +167,6 @@ def create_boxplot(df, column, output_dir):
         return None
     if series.nunique() <= 1:
         return None
-    series = _sample_series(series)
     fig, ax = plt.subplots(figsize=(7.5, 5.5))
     ax.boxplot(
         series,
@@ -243,7 +232,7 @@ def create_categorical_bar(df, column, output_dir, max_categories=MAX_CATEGORIES
     plt.close(fig)
     return str(output_path)
 
-def create_scatter(df, column_x, column_y, output_dir, max_points=MAX_SCATTER_POINTS):
+def create_scatter(df, column_x, column_y, output_dir):
     output_dir = _ensure_output_dir(output_dir)
     pair = df[[column_x, column_y]].copy()
     pair = pair.replace([np.inf, -np.inf], np.nan).dropna()
@@ -251,7 +240,6 @@ def create_scatter(df, column_x, column_y, output_dir, max_points=MAX_SCATTER_PO
         return None
     if (pair[column_x].nunique() <= 1 or pair[column_y].nunique() <= 1):
         return None
-    pair = _sample_dataframe(pair, max_points)
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.scatter(pair[column_x], pair[column_y], alpha=0.42, s=22, edgecolors="none")
     try:

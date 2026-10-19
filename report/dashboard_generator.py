@@ -212,8 +212,182 @@ def _time_series_values(series, time_type):
         pass
     return ((parsed - pd.Timestamp("1970-01-01")) / pd.Timedelta(milliseconds=1))
 
+def _representative_positions(count, limit, rng=None):
+    """把有序序列 [0, count) 均分成 limit 段，每段内随机取一个位置。
+
+    返回升序、去重后的位置数组。相比纯随机抽样，等距分层保证抽样点铺满
+    整个序列（不会聚堆、也不会留下空档）；段内随机则避免被数据自身的
+    周期性规律带偏。
+    """
+    if (limit is None or limit <= 0 or count <= limit):
+        return np.arange(count)
+    # 用 limit+1 个切点把 [0, count) 切成 limit 段；每段至少给出一个候选位置，
+    # 各段区间互不重叠，因此结果一定是 limit 个互不相同的行。
+    edges = (np.linspace(0, count, limit + 1))
+    starts = (np.floor(edges[:-1]).astype(int))
+    ends = (np.ceil(edges[1:]).astype(int))
+    starts = (np.minimum(starts, count - 1))
+    ends = (np.minimum(np.maximum(ends, starts + 1), count))
+    positions = []
+    for start, end in zip(starts, ends):
+        if rng is None:
+            positions.append((start + end - 1) // 2)
+        else:
+            positions.append(int(rng.integers(start, end)))
+    return np.unique(np.asarray(positions, dtype=int))
+
+
+def _sort_positions(values):
+    """返回按 values 升序排列的行位置；无法解析（NaN）的行排最后并剔除。"""
+    numeric = (np.asarray(values, dtype="float64"))
+    valid = (np.isfinite(numeric))
+    order = (np.argsort(numeric, kind="stable"))
+    if valid.all():
+        return order
+    return order[valid[order]]
+
+
+def _allocate_shares(sizes, limit):
+    """用最大余额法把 limit 个名额按比例分配给各组。"""
+    total = (float(sum(sizes)))
+    if total <= 0:
+        return ([0] * len(sizes))
+    exact = ([limit * size / total for size in sizes])
+    base = ([int(math.floor(value)) for value in exact])
+    remaining = (limit - sum(base))
+    if remaining <= 0:
+        return base
+    order = (sorted(range(len(sizes)), key=lambda index: exact[index] - base[index], reverse=True))
+    position = 0
+    guard = 0
+    limit_guard = (len(order) * (limit + 1))
+    while (remaining > 0 and guard < limit_guard):
+        index = (order[position % len(order)])
+        if base[index] < int(sizes[index]):
+            base[index] += 1
+            remaining -= 1
+        position += 1
+        guard += 1
+    return base
+
+
+def _to_order_keys(values):
+    """把排序键统一转成 float64 数组；无法解析的位置记为 +inf（排到最后）。"""
+    if values is None:
+        return None
+    try:
+        series = (pd.Series(values).reset_index(drop=True))
+    except Exception:
+        return None
+    if pd.api.types.is_datetime64_any_dtype(series):
+        deltas = (series - pd.Timestamp("1970-01-01"))
+        series = (deltas.dt.total_seconds() * 1000.0)
+    numeric = (pd.to_numeric(series, errors="coerce").to_numpy(dtype="float64"))
+    return np.where(np.isnan(numeric), np.inf, numeric)
+
+
+def _representative_sample(data, limit, order_values=None, group_columns=None):
+    """抽取一份尽量代表整体趋势与分布的子集。
+
+    两层分层：
+      1. 有分类变量时按类别组合分配名额（比例分层），
+         样本里的类别构成与原始数据保持一致，小类别不会被抽没；
+      2. 每个类别内部（或没有类别时的整体）按时间升序排列后等距分层、
+         层内随机取一行，保证抽样点覆盖完整时间跨度，
+         趋势不会被截断、也不会因随机波动而忽高忽低。
+
+    没有时间变量时退化为纯随机抽样——此时没有趋势需要保留，
+    随机抽样本身对分布就是无偏的。
+    """
+    count = (len(data))
+    if (limit is None or count <= limit):
+        return data
+    if order_values is None:
+        return data.sample(n=limit, random_state=42)
+
+    keys = (_to_order_keys(order_values))
+    rng = (np.random.default_rng(42))
+    columns = [column for column in (group_columns or []) if column in data.columns]
+
+    if (not columns):
+        # 无分类变量：整体按时间等距分层抽样。
+        order = (_sort_positions(keys))
+        return data.iloc[order[_representative_positions(len(order), limit, rng)]]
+
+    # 有分类变量：先按 (类别组合, 时间) 稳定排序，再在每组内等距分层抽样。
+    labels = (data[columns[0]].astype(str).to_numpy())
+    for column in columns[1:]:
+        labels = (labels + "\u0001" + data[column].astype(str).to_numpy())
+    order = (np.lexsort((keys, labels)))
+    valid = (np.isfinite(keys))
+    order = (order[valid[order]])
+    if not len(order):
+        return data
+
+    sorted_labels = (labels[order])
+    change = (np.flatnonzero(sorted_labels[1:] != sorted_labels[:-1]) + 1)
+    starts = (np.concatenate(([0], change)))
+    ends = (np.concatenate((change, [len(sorted_labels)])))
+    shares = (_allocate_shares((ends - starts).tolist(), limit))
+
+    picked = []
+    for start, end, amount in zip(starts, ends, shares):
+        if amount <= 0:
+            continue
+        block = (order[start:end])
+        if amount >= len(block):
+            picked.append(block)
+        else:
+            picked.append(block[_representative_positions(len(block), amount, rng)])
+    if not picked:
+        return data
+    return data.iloc[np.sort(np.concatenate(picked))]
+
+
+def _resolve_order_values(df, variable_types):
+    """返回用于等距抽样的排序键（时间值）；没有时间变量时返回 None。"""
+    time_type, time_column = (_resolve_time_column(df, variable_types))
+    if (time_column is None or time_column not in df.columns):
+        return None
+    try:
+        return _time_series_values(df[time_column], time_type)
+    except Exception:
+        return None
+
+
+def _resolve_group_columns(df, variable_types, limit):
+    """挑选用于比例分层的分类变量；没有合适的就返回空列表。
+
+    从「取值个数最多」的列开始逐个加入，只要累计组合数不超过上限就继续。
+    取值越多的分组越容易在随机抽样里漏掉小类别，最需要按比例保底；
+    但组合数太多会把样本切得太碎，每组只剩一两行，反而破坏组内的时间覆盖。
+    """
+    if (not limit or limit <= 0):
+        return []
+    max_combinations = (max(2, int(limit // 5)))
+    candidates = []
+    for column in _get_categorical_columns(df, variable_types):
+        try:
+            unique_count = (int(df[column].nunique(dropna=True)))
+        except Exception:
+            continue
+        if (unique_count > 1):
+            candidates.append((column, unique_count))
+    # 取值个数从多到少：优先保住最细的分组维度。
+    candidates.sort(key=lambda item: item[1], reverse=True)
+    chosen = []
+    total = 1
+    for column, unique_count in candidates:
+        if (total * unique_count > max_combinations):
+            continue
+        chosen.append(column)
+        total *= unique_count
+    return chosen
+
+
 def _prepare_time_filter(df, variable_types):
     """准备时间范围筛选所需的元数据（不改变原有数据结构，仅新增）。"""
+
     time_type, time_column = _resolve_time_column(df, variable_types)
     if time_type is None or time_column is None:
         return {"available": False, "time_type": None, "time_column": None, "min": None, "max": None}
@@ -270,8 +444,15 @@ def _prepare_numeric_data(df, variable_types, max_points=MAX_NUMERIC_POINTS, ful
     if full_data or max_points is None:
         truncated = False
     elif len(data) > max_points:
-        # 默认路径：超过上限时随机抽样子集，供交互图表使用。
-        data = data.sample(n=max_points, random_state=42)
+        # 默认路径：超过上限时抽一份「代表性子集」供交互图表使用。
+        # 先按时间排序再等距分层、层内随机取行，让 5,000 行也能铺满
+        # 完整时间跨度（趋势不中断），同时保持各类别构成比例（分布不失真）。
+        data = _representative_sample(
+            data,
+            max_points,
+            order_values=_resolve_order_values(data, variable_types),
+            group_columns=_resolve_group_columns(data, variable_types, max_points)
+        )
         truncated = True
     else:
         truncated = False
@@ -526,8 +707,12 @@ def _prepare_time_data(df, variable_types, max_points=MAX_TIME_POINTS, full_data
         if full_data or max_points is None:
             truncated = False
         elif len(data) > max_points:
-            index = np.linspace(0, len(data) - 1, max_points, dtype=int)
-            data = data.iloc[index]
+            data = _representative_sample(
+                data,
+                max_points,
+                order_values=data[time_column],
+                group_columns=_resolve_group_columns(data, variable_types, max_points)
+            )
             truncated = True
         else:
             truncated = False
@@ -587,8 +772,12 @@ def _prepare_time_data(df, variable_types, max_points=MAX_TIME_POINTS, full_data
     if full_data or max_points is None:
         truncated = False
     elif len(data) > max_points:
-        index = np.linspace(0, len(data) - 1, max_points, dtype=int)
-        data = data.iloc[index]
+        data = _representative_sample(
+            data,
+            max_points,
+            order_values=data[datetime_column],
+            group_columns=_resolve_group_columns(data, variable_types, max_points)
+        )
         truncated = True
     else:
         truncated = False

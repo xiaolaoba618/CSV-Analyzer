@@ -66,7 +66,7 @@ def build_analysis_result(
             "correlation": correlation,
             "visualizations": visualizations,
         },
-        outputs={"report": str(report_path), "dashboard": str(dashboard_path), "figure_directory": str(output_dir / "figures"),},
+        outputs={"report": str(report_path), "dashboard": str(dashboard_path),},
         # 保留原始 DataFrame，便于 Python 调用。
         # 对外结果中不直接暴露原始 DataFrame。
         dataframe=dataframe,

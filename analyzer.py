@@ -50,9 +50,9 @@ def analyze_csv(input_file, output_dir="output", progress_callback=None, variabl
             f"{input_file}"
         )
     report_progress("正在准备输出目录...", 4)
-    figure_dir = (output_dir / "figures")
+    # 统计图只是中间产物，生成后会被转成 base64 内嵌进 HTML，
+    # 因此不再单独建 figures 目录，输出目录里只保留两份报告。
     output_dir.mkdir(parents=True, exist_ok=True)
-    figure_dir.mkdir(parents=True, exist_ok=True)
     report_progress("正在读取 CSV 数据...", 8)
     print(
         f"Input file: {input_file}"
@@ -133,7 +133,7 @@ def analyze_csv(input_file, output_dir="output", progress_callback=None, variabl
     visualizations = (
         create_all_visualizations(
             df,
-            output_dir=figure_dir,
+            output_dir=output_dir,
             correlation_result=correlation,
             correlation_method="spearman",
             variable_types=variable_types,

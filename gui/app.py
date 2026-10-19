@@ -33,7 +33,6 @@ from PySide6.QtWidgets import (
 from analyzer import analyze_csv
 from report.dashboard_generator import (
     MAX_NUMERIC_POINTS,
-    MAX_SCATTER_POINTS,
     format_size,
 )
 from tools.data_loader import load_csv_preview, SUPPORTED_ENCODINGS
@@ -58,10 +57,10 @@ EXPORT_ALL_TIP = (
     "<b>导出全部数据 —— 影响范围</b><br><br>"
     "报告里的数据分四类，本选项只影响第一类：<br><br>"
     "<b>1. 行级明细（受本选项控制）</b><br>"
-    f"• 未勾选：数值分布、变量关系、时间变化等图表只用随机抽取的 {MAX_NUMERIC_POINTS:,} 行<br>"
+    f"• 未勾选：交互式报告只用代表性抽样的 {MAX_NUMERIC_POINTS:,} 行"
+    "（按时间等距分层，并按分类变量比例分配名额，尽量保留整体趋势与分布）<br>"
     "• 勾选后：放开到全部数据行<br>"
-    f"• 例外：散点图恒为每对变量 {MAX_SCATTER_POINTS:,} 点 —— 变量两两组合，"
-    "全量会让体积成数十倍放大<br><br>"
+    "• 静态报告（report.html）的统计图<b>始终使用全量数据</b>，与本选项无关<br><br>"
     "<b>2. 时间序列（不受本选项控制）</b><br>"
     "趋势图是「按时间桶聚合」的结果，存的是每个时间桶的均值／中位数／最值／计数，"
     "不是原始行。<br>"
@@ -80,9 +79,9 @@ EXPORT_ALL_TIP = (
 )
 
 EXPORT_ALL_ADVICE = (
-    "通常不必勾选：只看总体分布、趋势、相关性时抽样已足够；"
-    "单个对象的完整序列请改用「标识符」筛选。\n"
-    "必须勾选：需要在报告里逐行查看或保留全部原始明细。"
+    "通常不必勾选：静态报告本就用全量数据；交互图表看总体分布、趋势、相关性时，"
+    "代表性抽样的 5,000 行已足够，单个对象的完整序列请改用「标识符」筛选。\n"
+    "必须勾选：需要在交互式报告里逐行查看或保留全部原始明细。"
 )
 
 
