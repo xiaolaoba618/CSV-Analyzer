@@ -4450,21 +4450,21 @@
     /*
      * 交互图表共用的配色；颜色顺序与数据集顺序一一对应，
      * 图例隐藏／恢复某个分组时颜色不会跟着变。
+     * 前 10 个与历史版本保持一致；扩展到 20 个是为了分组较多时
+     * 减少颜色循环重复（仍可能重复，但图例可按位置区分）。
      */
     const CHART_PALETTE = [
         "#4f46e5", "#0ea5e9", "#16a34a", "#f59e0b", "#ef4444",
-        "#8b5cf6", "#14b8a6", "#f97316", "#64748b", "#ec4899"
+        "#8b5cf6", "#14b8a6", "#f97316", "#64748b", "#ec4899",
+        "#0d9488", "#d946ef", "#84cc16", "#e11d48", "#2563eb",
+        "#ca8a04", "#7c3aed", "#059669", "#dc2626", "#0891b2"
     ];
-
-    /*
-     * 图例项过多会挤没绘图区，这里统一限制分组数量；
-     * 超出的部分合并成一个「其他」分组，所有记录仍然落在图上，而不是被丢掉。
-     */
-    const MAX_CHART_GROUPS = 15;
 
     /*
      * 按记录数降序取前 limit 个分组，其余合并为一个「其他」分组。
      * grouped 为 Map(分组名 -> 数组)，返回 [[分组名, 数组], ...]。
+     * limit 传 Infinity 时返回全部分组（一维散点与堆叠直方图就是这种用法：
+     * 用户要求看到每一个分类取值，不做「其他分类」聚合）。
      */
     function collectTopGroups(grouped, limit, mergeLabel) {
         const entries = Array.from(grouped.entries())
@@ -4537,7 +4537,7 @@
             grouped.get(group).push(value);
         });
         if (!grouped.size) return null;
-        const entries = collectTopGroups(grouped, MAX_CHART_GROUPS, "其他分类");
+        const entries = collectTopGroups(grouped, Infinity, "其他分类");
         const jitter = createStripJitter(20240917);
         return {
             hasGroups: Boolean(categoryColumn),
@@ -4885,6 +4885,15 @@
             const rows = Math.max(1, Math.ceil(items / 6));
             height = base + (rows - 1) * 24;
         }
+        /*
+         * 一维散点按分组在 Y 轴铺横带，分组多时绘图区也要跟着撑高，
+         * 否则每条带只剩几个像素。autoSkip:false + min:-0.6 是 strip Y 轴的标记。
+         */
+        const stripBands = (
+            chart.options?.scales?.y?.ticks?.autoSkip === false &&
+            chart.options?.scales?.y?.min === -0.6
+        ) ? items : 0;
+        if (stripBands > 8) height = Math.max(height, 150 + stripBands * 26);
         wrapper.style.height = Math.min(height, 900) + "px";
         if (typeof chart.resize === "function") chart.resize();
     }
@@ -5077,7 +5086,7 @@
             datasets =
                 collectTopGroups(
                     groupedValues,
-                    MAX_CHART_GROUPS,
+                    Infinity,
                     "其他分类"
                 ).map(
                     function (entry, index) {
