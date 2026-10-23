@@ -4586,6 +4586,12 @@
        ======================================================== */
 
     const MAX_CHART_POINTS = 60000;
+    /*
+     * 散点图单独用更小的预算：散点的悬停命中检测逐点扫描，
+     * 6 万点在浏览器里拖动/悬停会明显卡顿；2 万点配合分布特征
+     * 抽稀（轮廓 + 孤立点保底）肉眼观感几乎不变。
+     */
+    const SCATTER_MAX_POINTS = 20000;
     const MIN_DATASET_POINTS = 800;
     const ENVELOPE_BINS = 96;
     const ISO_NEIGHBOR_MAX = 8;
@@ -4828,10 +4834,13 @@
     /*
      * 把预算落到一组已经建好的数据集上，并记录本次是否发生过抽稀。
      */
-    function applyPointBudget(datasets, useY, chartKey) {
+    function applyPointBudget(datasets, useY, chartKey, budget) {
+        const cap = budget || MAX_CHART_POINTS;
         const counts = datasets.map(function (dataset) { return dataset.data.length; });
         const totalBefore = counts.reduce(function (sum, count) { return sum + count; }, 0);
-        const budgets = allocatePointBudgets(counts, MAX_CHART_POINTS, MIN_DATASET_POINTS);
+        /* 数据集很多时保底名额总额不能超过预算本身。 */
+        const floor = Math.min(MIN_DATASET_POINTS, Math.max(1, Math.floor(cap / Math.max(1, counts.length))));
+        const budgets = allocatePointBudgets(counts, cap, floor);
         let totalAfter = 0;
         datasets.forEach(function (dataset, index) {
             const indices = selectThinnedIndices(dataset.data, budgets[index], useY);
@@ -5593,6 +5602,43 @@
        Scatter chart
        ======================================================== */
 
+    /*
+     * 稳健坐标轴范围：数据带长尾离群值时（如个别极端记录把 y 轴
+     * 顶到主体的十几倍），主体会被压成底部一条细线。这里取
+     * 0.5%–99.5% 分位作为显示范围并留 6% 边距；仅当长尾确实
+     * 显著（全距超过截取范围的 1.6 倍）时才截取，正常分布不受影响。
+     * 范围外的点被画布裁掉，tooltip 统计仍走全量口径。
+     */
+    function robustScaleBounds(datasets, pick) {
+        const values = [];
+        datasets.forEach(function (dataset) {
+            (dataset.data || []).forEach(function (point) {
+                const value = pick(point);
+                if (Number.isFinite(value)) values.push(value);
+            });
+        });
+        if (values.length < 100) return null;
+        values.sort(function (a, b) { return a - b; });
+        const min = values[0];
+        const max = values[values.length - 1];
+        const span = max - min;
+        if (!(span > 0)) return null;
+        const at = function (ratio) {
+            return values[Math.min(values.length - 1, Math.max(0, Math.round(ratio * (values.length - 1))))];
+        };
+        const low = at(0.005);
+        const high = at(0.995);
+        const trimmedSpan = high - low;
+        if (!(trimmedSpan > 0) || span < trimmedSpan * 1.6) return null;
+        const pad = trimmedSpan * 0.06;
+        return { min: low - pad, max: high + pad };
+    }
+
+    function axisTitleWithClip(text, bounds) {
+        if (!text) return text;
+        return bounds ? text + "（尾部离群值超出显示范围，已截取）" : text;
+    }
+
     function renderScatterChart(xColumn, yColumns, categoryColumn = "") {
         const canvas = document.getElementById("scatterChart");
         if (!canvas) return;
@@ -5621,7 +5667,8 @@
                 return;
             }
             hideChartMessage("scatterMessage");
-            applyPointBudget(strip.datasets, false, "scatterChart");
+            applyPointBudget(strip.datasets, false, "scatterChart", SCATTER_MAX_POINTS);
+            const stripXBounds = robustScaleBounds(strip.datasets, function (point) { return point.x; });
             scatterChart = new Chart(canvas, {
                 type: "scatter",
                 data: { datasets: strip.datasets },
@@ -5637,7 +5684,11 @@
                         }
                     },
                     scales: {
-                        x: { title: { display: true, text: xColumn } },
+                        x: {
+                            title: { display: true, text: axisTitleWithClip(xColumn, stripXBounds) },
+                            min: stripXBounds ? stripXBounds.min : undefined,
+                            max: stripXBounds ? stripXBounds.max : undefined
+                        },
                         y: makeStripYAxis(strip)
                     }
                 })
@@ -5687,7 +5738,9 @@
             };
         });
 
-        applyPointBudget(datasets, true, "scatterChart");
+        applyPointBudget(datasets, true, "scatterChart", SCATTER_MAX_POINTS);
+        const scatterXBounds = robustScaleBounds(datasets, function (point) { return point.x; });
+        const scatterYBounds = robustScaleBounds(datasets, function (point) { return point.y; });
 
         scatterChart = new Chart(canvas, {
             type: "scatter",
@@ -5698,8 +5751,16 @@
                     legend: makeLegendConfig()
                 },
                 scales: {
-                    x: { title: { display: true, text: xColumn } },
-                    y: { title: { display: true, text: "数值" } }
+                    x: {
+                        title: { display: true, text: axisTitleWithClip(xColumn, scatterXBounds) },
+                        min: scatterXBounds ? scatterXBounds.min : undefined,
+                        max: scatterXBounds ? scatterXBounds.max : undefined
+                    },
+                    y: {
+                        title: { display: true, text: axisTitleWithClip("数值", scatterYBounds) },
+                        min: scatterYBounds ? scatterYBounds.min : undefined,
+                        max: scatterYBounds ? scatterYBounds.max : undefined
+                    }
                 }
             })
         });
@@ -6027,7 +6088,7 @@
                 return;
             }
             hideChartMessage("normalizedScatterMessage");
-            applyPointBudget(strip.datasets, false, "normalizedScatterChart");
+            applyPointBudget(strip.datasets, false, "normalizedScatterChart", SCATTER_MAX_POINTS);
             normalizedScatterChart = new Chart(canvas, {
                 type: "scatter",
                 data: { datasets: strip.datasets },
@@ -6094,7 +6155,7 @@
             };
         });
 
-        applyPointBudget(datasets, true, "normalizedScatterChart");
+        applyPointBudget(datasets, true, "normalizedScatterChart", SCATTER_MAX_POINTS);
 
         normalizedScatterChart = new Chart(canvas, {
             type: "scatter",

@@ -159,6 +159,14 @@ def _try_parse_datetime(series, allow_numeric_compact=False):
                 return True
         except Exception:
             pass
+    # 中文日期「2023年1月3日 / 2023年1月」不含 [-/.:] 分隔符，
+    # 必须在分隔符比例门槛之前识别，否则会漏检整类中文数据。
+    cjk_date_ratio = (
+        sample.str.fullmatch(r"\d{4}年\d{1,2}月(\d{1,2}日)?")
+        .mean()
+    )
+    if cjk_date_ratio >= DATETIME_SUCCESS_THRESHOLD:
+        return True
     datetime_pattern_ratio = (sample.str.contains(r"[-/.:]", regex=True).mean())
     if datetime_pattern_ratio < DATETIME_SUCCESS_THRESHOLD:
         return False
@@ -168,6 +176,43 @@ def _try_parse_datetime(series, allow_numeric_compact=False):
         return (success_ratio >= DATETIME_SUCCESS_THRESHOLD)
     except Exception:
         return False
+
+
+# 中文日期（含可选的中文时间）无法被 dateutil 识别，必须按显式格式解析。
+_DATETIME_FALLBACK_FORMATS = (
+    "%Y年%m月%d日 %H:%M:%S",
+    "%Y年%m月%d日 %H:%M",
+    "%Y年%m月%d日",
+    "%Y年%m月",
+)
+
+
+def parse_datetime_flexible(series):
+    """宽容地把时间列转成 datetime64。
+
+    先走 dateutil 默认解析；若成功率不达标（如中文日期「2023年1月3日」
+    这类 dateutil 完全不认识的格式），再按候选显式格式逐个尝试，
+    取成功率更高的结果。
+    """
+    try:
+        parsed = pd.to_datetime(series, errors="coerce", format="mixed")
+    except Exception:
+        parsed = pd.to_datetime(series, errors="coerce")
+    best_ratio = (parsed.notna().mean() if len(parsed) else 0.0)
+    if best_ratio >= DATETIME_SUCCESS_THRESHOLD:
+        return parsed
+    strings = series.astype("string").str.strip()
+    for fmt in _DATETIME_FALLBACK_FORMATS:
+        try:
+            candidate = pd.to_datetime(strings, errors="coerce", format=fmt)
+        except Exception:
+            continue
+        ratio = (candidate.notna().mean() if len(candidate) else 0.0)
+        if ratio > best_ratio:
+            parsed, best_ratio = candidate, ratio
+        if best_ratio >= DATETIME_SUCCESS_THRESHOLD:
+            break
+    return parsed
 
 def _try_parse_time(series):
     non_null = series.dropna()

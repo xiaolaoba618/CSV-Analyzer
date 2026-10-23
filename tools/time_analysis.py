@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from tools.data_profiler import parse_datetime_flexible
 DEFAULT_TOP_INTERVALS = 10
 DEFAULT_MAX_DAILY_RESULTS = 100
 
@@ -18,7 +19,7 @@ def _get_datetime_columns(df, variable_types=None):
     return datetime_columns
 
 def analyze_time_range(df, datetime_column):
-    series = pd.to_datetime(df[datetime_column], errors="coerce").dropna()
+    series = parse_datetime_flexible(df[datetime_column]).dropna()
     if series.empty:
         return {"status": "skipped", "reason": "no_valid_datetime_values", "column": datetime_column}
     minimum = series.min()
@@ -36,7 +37,7 @@ def analyze_time_range(df, datetime_column):
     }
 
 def analyze_time_intervals(df, datetime_column, top_n=DEFAULT_TOP_INTERVALS):
-    series = pd.to_datetime(df[datetime_column], errors="coerce").dropna()
+    series = parse_datetime_flexible(df[datetime_column]).dropna()
     if len(series) < 2:
         return {"status": "skipped", "reason": "insufficient_datetime_values", "column": datetime_column}
     # 计算时间间隔前先按时间排序。
@@ -73,7 +74,7 @@ def analyze_time_intervals(df, datetime_column, top_n=DEFAULT_TOP_INTERVALS):
     }
 
 def analyze_hourly_distribution(df, datetime_column):
-    series = pd.to_datetime(df[datetime_column], errors="coerce").dropna()
+    series = parse_datetime_flexible(df[datetime_column]).dropna()
     if series.empty:
         return {"status": "skipped", "reason": "no_valid_datetime_values", "column": datetime_column}
     counts = (series.dt.hour.value_counts().sort_index())
@@ -85,7 +86,7 @@ def analyze_hourly_distribution(df, datetime_column):
     return {"status": "ok", "column": datetime_column, "results": results}
 
 def analyze_daily_distribution(df, datetime_column, max_results=DEFAULT_MAX_DAILY_RESULTS):
-    series = pd.to_datetime(df[datetime_column], errors="coerce").dropna()
+    series = parse_datetime_flexible(df[datetime_column]).dropna()
     if series.empty:
         return {"status": "skipped", "reason": "no_valid_datetime_values", "column": datetime_column}
     date_counts = (series.dt.date.value_counts().sort_index())
@@ -110,7 +111,7 @@ def analyze_daily_distribution(df, datetime_column, max_results=DEFAULT_MAX_DAIL
     }
 
 def analyze_weekday_distribution(df, datetime_column):
-    series = pd.to_datetime(df[datetime_column], errors="coerce").dropna()
+    series = parse_datetime_flexible(df[datetime_column]).dropna()
     if series.empty:
         return {"status": "skipped", "reason": "no_valid_datetime_values", "column": datetime_column}
     weekday_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]

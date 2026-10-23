@@ -6,6 +6,7 @@ import math
 from datetime import date, datetime
 import numpy as np
 import pandas as pd
+from tools.data_profiler import parse_datetime_flexible
 MAX_CATEGORIES = 15
 MAX_HEATMAP_COLUMNS = 30
 # 全量导出与抽样的分界行数：不超过该值时始终写入全部行；
@@ -200,7 +201,7 @@ def _time_series_values(series, time_type):
     """把时间列转换为可比较的数值：datetime 用毫秒时间戳，time_index 用浮点数值。"""
     if time_type == "time_index":
         return pd.to_numeric(series, errors="coerce")
-    parsed = pd.to_datetime(series, errors="coerce")
+    parsed = parse_datetime_flexible(series)
     try:
         if getattr(parsed.dt, "tz", None) is not None:
             parsed = parsed.dt.tz_convert(None)

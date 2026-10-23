@@ -1,6 +1,7 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
+from tools.data_profiler import parse_datetime_flexible
 DEFAULT_MIN_OBSERVATIONS = 3
 DEFAULT_ANOMALY_WINDOW = 7
 DEFAULT_ANOMALY_THRESHOLD = 3.5
@@ -86,7 +87,7 @@ def _prepare_datetime_series(df, datetime_column):
         raise KeyError(
             f"Datetime column not found in dataframe: {datetime_column}"
         )
-    series = pd.to_datetime(df[datetime_column], errors="coerce")
+    series = parse_datetime_flexible(df[datetime_column])
     return series
 
 def _detect_time_frequency(datetime_series, tolerance=0.20):
@@ -138,7 +139,7 @@ def _aggregate_time_series(df, datetime_column, numeric_columns, frequency):
     if rule is None:
         return {"status": "skipped", "reason": "irregular_frequency"}
     work_df = df[[datetime_column] + numeric_columns].copy()
-    work_df[datetime_column] = pd.to_datetime(work_df[datetime_column], errors="coerce")
+    work_df[datetime_column] = parse_datetime_flexible(work_df[datetime_column])
     work_df = work_df.dropna(subset=[datetime_column])
     if work_df.empty:
         return {"status": "skipped", "reason": "no_valid_datetime_values"}
@@ -175,7 +176,7 @@ def _prepare_irregular_time_series(df, datetime_column, numeric_columns):
     if not numeric_columns:
         return {"status": "skipped", "reason": "no_numeric_variables", "variables": {}}
     work_df = df[[datetime_column] + numeric_columns].copy()
-    work_df[datetime_column] = pd.to_datetime(work_df[datetime_column], errors="coerce")
+    work_df[datetime_column] = parse_datetime_flexible(work_df[datetime_column])
     work_df = work_df.dropna(subset=[datetime_column])
     if work_df.empty:
         return {"status": "skipped", "reason": "no_valid_datetime_values", "variables": {}}
@@ -323,7 +324,7 @@ def _analyze_original_series(
     if not numeric_columns:
         return {"status": "skipped", "reason": "no_numeric_variables", "variables": {}}
     work_df = df[[datetime_column] + numeric_columns].copy()
-    work_df[datetime_column] = pd.to_datetime(work_df[datetime_column], errors="coerce")
+    work_df[datetime_column] = parse_datetime_flexible(work_df[datetime_column])
     work_df = work_df.dropna(subset=[datetime_column])
     if work_df.empty:
         return {"status": "skipped", "reason": "no_valid_datetime_values", "variables": {}}

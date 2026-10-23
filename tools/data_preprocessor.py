@@ -1,6 +1,7 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
+from tools.data_profiler import parse_datetime_flexible
 NUMERIC_MISSING_TOKENS = {"", "-", "--", "NA", "N/A", "na", "n/a", "null", "NULL", "None", "none", "."}
 DEFAULT_DATETIME_COLUMN = "DATETIME"
 
@@ -60,7 +61,9 @@ def preprocess_datetime_column(df, column):
         return {"status": "skipped", "reason": "column_not_found"}
     try:
         original_series = df[column]
-        converted = pd.to_datetime(original_series, errors="coerce", format="mixed")
+        # 用宽容解析（兼容中文日期等 dateutil 不认识的格式），
+        # 避免 format="mixed" 把整列打成 NaT 后直接覆盖原数据。
+        converted = parse_datetime_flexible(original_series)
         original_missing = int(original_series.isna().sum())
         converted_missing = int(converted.isna().sum())
         newly_missing = (converted_missing - original_missing)
