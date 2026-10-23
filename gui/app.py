@@ -32,6 +32,8 @@ from PySide6.QtWidgets import (
 )
 from analyzer import analyze_csv
 from report.dashboard_generator import (
+    FULL_EXPORT_ROW_LIMIT,
+    MAX_IDENTIFIER_VALUES,
     MAX_NUMERIC_POINTS,
     format_size,
 )
@@ -56,16 +58,16 @@ def count_csv_rows(path):
 EXPORT_ALL_TIP = (
     "<b>导出全部数据 —— 影响范围</b><br><br>"
     "报告里的数据分四类，本选项只影响第一类：<br><br>"
-    "<b>1. 行级明细（受本选项控制）</b><br>"
-    f"• 未勾选：交互式报告只用代表性抽样的 {MAX_NUMERIC_POINTS:,} 行"
-    "（按时间等距分层，并按分类变量比例分配名额，尽量保留整体趋势与分布）<br>"
-    "• 勾选后：放开到全部数据行<br>"
+    "<b>1. 行级明细（受本选项控制，默认勾选）</b><br>"
+    "• 勾选（默认）：交互式报告写入全部数据行，可逐行查看、按标识符查完整记录<br>"
+    f"• 超过 {FULL_EXPORT_ROW_LIMIT:,} 行时会自动取消勾选，改为代表性抽样 "
+    f"{MAX_NUMERIC_POINTS:,} 行（按时间等距分层，并按分类变量比例分配名额，"
+    "尽量保留整体趋势与分布）；确认可接受体积可手动勾选回全量<br>"
     "• 静态报告（report.html）的统计图<b>始终使用全量数据</b>，与本选项无关<br><br>"
-    "<b>2. 时间序列（不受本选项控制）</b><br>"
-    "趋势图是「按时间桶聚合」的结果，存的是每个时间桶的均值／中位数／最值／计数，"
-    "不是原始行。<br>"
-    "多主体数据（如 500 只股票 × 698 个交易日 = 34 万行）会被压成一条均值曲线，"
-    "单只股票的历史无法从中还原；时间桶按自然日补齐，非交易日为空。<br><br>"
+    "<b>2. 时间趋势（随行级数据一起变化）</b><br>"
+    "趋势图不再单独存储聚合序列，而是由报告内的行级数据<b>实时按时间桶聚合</b>，"
+    "因此口径与本选项一致：全量时是全部原始行，抽样时是这 "
+    f"{MAX_NUMERIC_POINTS:,} 行。<br><br>"
     "<b>3. 标识符：按单个／组合标识符筛选</b><br>"
     "若某个变量被指定为「标识符」（如股票代码、用户 ID、设备号），可在报告里按"
     "单个标识符或多个标识符的组合筛选图表。<br>"
@@ -75,15 +77,39 @@ EXPORT_ALL_TIP = (
     "<b>4. 恒为全量</b><br>"
     "KPI、缺失率、相关系数等统计量始终基于完整数据计算，与勾选无关。<br><br>"
     "<b>关于体积</b><br>"
-    "报告体积取决于数据量与图表的实际大小，生成前无法准确预估；"
-    "分析完成后，界面会直接显示两份报告的实际占用。"
+    "体积主要取决于写入的行数与列构成，界面下方会给出生成前的估算值（误差约 15%）；"
+    "分析完成后会显示两份报告的实际占用。<br>"
+    "经验参考：约 50 MB 以内浏览器打开流畅，100 MB 以上会明显变慢。"
 )
 
 EXPORT_ALL_ADVICE = (
-    "通常不必勾选：静态报告本就用全量数据；交互图表看总体分布、趋势、相关性时，"
-    "代表性抽样的 5,000 行已足够。\n"
-    "必须勾选：需要在交互式报告里逐行查看全部明细，或要按标识符查某个对象的完整记录。"
+    f"默认勾选：行级明细不再重复存储，全量导出的开销已大幅下降。\n"
+    f"超过 {FULL_EXPORT_ROW_LIMIT:,} 行时会自动改为抽样，需要全量请手动勾选；"
+    "行数越多，报告体积越大、浏览器打开越慢。"
 )
+
+def estimate_dashboard_mb(table_rows, source_rows, variable_types):
+    """按列构成粗略估算交互式报告体积（MB），仅用于界面提示。
+
+    table_rows 为写入报告的行数（全量或抽样），source_rows 为源数据行数
+    （标识符取值字典恒按全量计算，不受抽样影响）。
+    """
+    if not source_rows:
+        return 0.0
+    types = variable_types or {}
+    numeric = sum(1 for info in types.values() if info.get("detected_type") == "numeric")
+    identifier = sum(1 for info in types.values() if info.get("detected_type") == "identifier")
+    other = max(len(types) - numeric - identifier, 0)
+    per_row = numeric * 9 + identifier * 7 + other * 8
+    mb = 1024.0 * 1024.0
+    # 表内标识符取值字典随写入行数增长（列式存储每个取值只存一次）
+    table_dict_mb = identifier * min(table_rows, source_rows) * 14 / mb
+    # 标识符搜索清单与组合计数：不受抽样影响，但有取值上限
+    search_dict_mb = identifier * min(source_rows, MAX_IDENTIFIER_VALUES) * 18 / mb
+    combination_mb = (
+        min(source_rows, MAX_IDENTIFIER_VALUES) * 18 / mb if identifier >= 2 else 0.0
+    )
+    return table_rows * per_row / mb + table_dict_mb + search_dict_mb + combination_mb + 3.0
 
 
 class InfoBadge(QLabel):
@@ -359,7 +385,7 @@ class CSVAnalyzerGUI(QWidget):
         export_row_layout.setSpacing(6)
         self.export_all_checkbox = QCheckBox("导出全部数据到交互式报告")
         self.export_all_checkbox.setObjectName("exportAllCheckbox")
-        self.export_all_checkbox.setChecked(False)
+        self.export_all_checkbox.setChecked(True)
         self.export_all_checkbox.setEnabled(False)
         self.export_all_checkbox.stateChanged.connect(self.update_export_hint)
         export_row_layout.addWidget(self.export_all_checkbox)
@@ -609,6 +635,7 @@ class CSVAnalyzerGUI(QWidget):
             self.input_row_count = count_csv_rows(path)
         except Exception:
             self.input_row_count = int(len(preview_df))
+        self.apply_export_threshold()
         self.selected_file_label.setText(
             f"已选择：{path}"
         )
@@ -618,6 +645,13 @@ class CSVAnalyzerGUI(QWidget):
         self.report_button.setEnabled(False)
         self.status_label.setText("文件已准备好，可以开始分析。")
         self.update_export_hint()
+    def apply_export_threshold(self):
+        """超过阈值时默认改为抽样，用户仍可手动勾选回全量。"""
+        if int(self.input_row_count or 0) <= FULL_EXPORT_ROW_LIMIT:
+            return
+        self.export_all_checkbox.blockSignals(True)
+        self.export_all_checkbox.setChecked(False)
+        self.export_all_checkbox.blockSignals(False)
     def update_export_hint(self):
         """根据数据行数与勾选状态，更新“导出全部数据”下方的说明与体积预估。"""
         neutral_style = (
@@ -646,32 +680,39 @@ class CSVAnalyzerGUI(QWidget):
                 f"共 {rows:,} 行；"
                 f"标识符：{'、'.join(self.preview_identifier_columns[:3])}"
                 f"{' 等' if len(self.preview_identifier_columns) > 3 else ''}，"
-                "该维度已按全量嵌入，可在报告中按单个取值查看完整原始序列。"
+                "可用于报告中按单个取值筛选（受本选项控制）。"
             )
         else:
             identifier_note = f"<br><br><b>当前数据集</b><br>共 {rows:,} 行。"
         self.export_info_badge.set_tip(EXPORT_ALL_TIP + identifier_note)
-        identifier_suffix = (
-            " · 标识符全量留存"
-            if getattr(self, "preview_identifier_columns", None)
-            else ""
+        full_mb = estimate_dashboard_mb(rows, rows, self.preview_variable_types)
+        sampled_mb = estimate_dashboard_mb(
+            min(rows, MAX_NUMERIC_POINTS), rows, self.preview_variable_types
         )
         if rows <= MAX_NUMERIC_POINTS:
             self.export_hint_label.setStyleSheet(neutral_style)
             self.export_hint_label.setText(
-                f"{rows:,} 行，未超 {MAX_NUMERIC_POINTS:,} 行上限 · "
-                f"勾选与否一致{identifier_suffix}"
+                f"共 {rows:,} 行，未超过抽样上限 · 勾选与否报告一致（约 {full_mb:.0f} MB）"
             )
             return
         if self.export_all_checkbox.isChecked():
-            self.export_hint_label.setStyleSheet(warning_style)
-            self.export_hint_label.setText(
-                f"全部 {rows:,} 行写入交互式报告 · 体积与性能开销增加{identifier_suffix}"
-            )
+            if rows > FULL_EXPORT_ROW_LIMIT:
+                self.export_hint_label.setStyleSheet(warning_style)
+                self.export_hint_label.setText(
+                    f"已手动勾选：全部 {rows:,} 行写入报告，约 {full_mb:.0f} MB · "
+                    "浏览器打开会明显变慢"
+                )
+            else:
+                self.export_hint_label.setStyleSheet(neutral_style)
+                self.export_hint_label.setText(
+                    f"默认全量：{rows:,} 行全部写入报告，约 {full_mb:.0f} MB"
+                )
             return
         self.export_hint_label.setStyleSheet(notice_style)
         self.export_hint_label.setText(
-            f"抽样 {MAX_NUMERIC_POINTS:,} 行 / 共 {rows:,} 行{identifier_suffix}"
+            f"共 {rows:,} 行，超过 {FULL_EXPORT_ROW_LIMIT:,} 行阈值，已改为抽样 "
+            f"{MAX_NUMERIC_POINTS:,} 行（约 {sampled_mb:.0f} MB）· "
+            f"需要全量请勾选（约 {full_mb:.0f} MB）"
         )
     def start_analysis(self):
         if self.input_file is None:

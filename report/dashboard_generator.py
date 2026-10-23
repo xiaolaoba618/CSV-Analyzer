@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 MAX_CATEGORIES = 15
 MAX_HEATMAP_COLUMNS = 30
+FULL_EXPORT_ROW_LIMIT = 500000
 MAX_TIME_POINTS = 5000
 MAX_NUMERIC_POINTS = 5000
 MAX_IDENTIFIER_VALUES = 300000
@@ -631,86 +632,12 @@ def _prepare_correlation_chart_data(correlation, method="spearman", max_columns=
             values.append({"x": int(column_index), "y": int(row_index), "value": float(value)})
     return {"method": method, "columns": [str(column) for column in columns], "values": values}
 
-def _prepare_time_analysis_chart_data(time_analysis):
-    result = {"hourly": {}, "weekday": {}, "daily": {}}
-    if not time_analysis:
-        return result
-    analyses = time_analysis.get("analyses", {})
-    if not isinstance(analyses, dict):
-        return result
-    for column, analysis in analyses.items():
-        if not isinstance(analysis, dict):
-            continue
-        column_name = str(column)
-        hourly = analysis.get("hourly_distribution", {})
-        if (isinstance(hourly, dict) and hourly.get("status") == "ok"):
-            records = hourly.get("results", [])
-            if records:
-                result["hourly"][column_name] = {"labels": [int(item["hour"]) for item in records], "counts": [int(item["count"]) for item in records]}
-        weekday = analysis.get("weekday_distribution", {})
-        if (isinstance(weekday, dict) and weekday.get("status") == "ok"):
-            records = weekday.get("results", [])
-            if records:
-                result["weekday"][column_name] = {"labels": [str(item["weekday"]) for item in records], "counts": [int(item["count"]) for item in records]}
-        daily = analysis.get("daily_distribution", {})
-        if (isinstance(daily, dict) and daily.get("status") == "ok"):
-            records = daily.get("results", [])
-            if records:
-                records = records[:MAX_TIME_POINTS]
-                result["daily"][column_name] = {"labels": [str(item["date"]) for item in records], "counts": [int(item["count"]) for item in records]}
-    return result
-
-def _prepare_time_series_chart_data(time_series):
-    result = {}
-    if not time_series:
-        return result
-    if time_series.get("status") != "ok":
-        return result
-    aggregation = time_series.get("aggregation")
-    if not aggregation:
-        return result
-    if aggregation.get("status") != "ok":
-        return result
-    frequency = aggregation.get("frequency", "unknown")
-    variables = aggregation.get("variables", {})
-    if not isinstance(variables, dict):
-        return result
-    for column, variable_result in variables.items():
-        if not isinstance(variable_result, dict):
-            continue
-        if variable_result.get("status") != "ok":
-            continue
-        records = variable_result.get("results", [])
-        if not records:
-            continue
-        records = records[:MAX_TIME_POINTS]
-        data = []
-        for item in records:
-            time_key = "datetime" if "datetime" in item else "time_index"
-            if time_key not in item:
-                continue
-            if frequency == "irregular":
-                value = item.get("value")
-            else:
-                value = item.get("mean")
-            if value is None:
-                continue
-            try:
-                data.append({"datetime": str(item[time_key]), "value": float(value)})
-            except (TypeError, ValueError):
-                continue
-        if data:
-            result[str(column)] = {"frequency": str(frequency), "data": data}
-    return result
-
 def _prepare_analysis_data(
     df,
     profile=None,
     statistics=None,
     quality=None,
     missingness=None,
-    time_analysis=None,
-    time_series=None,
     correlation=None,
     image_data=None,
     export_all_data=False
@@ -738,10 +665,6 @@ def _prepare_analysis_data(
             quality or {},
         "missingness":
             missingness or {},
-        "time_analysis":
-            time_analysis or {},
-        "time_series":
-            time_series or {},
         "correlation":
             correlation or {},
         "data_scope":
@@ -777,18 +700,16 @@ def generate_dashboard(
     statistics=None,
     quality=None,
     missingness=None,
-    time_analysis=None,
-    time_series=None,
     correlation=None,
     visualizations=None,
     output_path="output/dashboard.html",
     template_path="report/dashboard_template.html",
     title="Interactive Data Dashboard",
-    export_all_data=False
+    export_all_data=True
 ):
     """生成独立的交互式 HTML Dashboard。
 
-    export_all_data=True 时，交互式图表使用完整数据，不再按 5000 行等上限抽样。
+    export_all_data=True（默认）时，交互式图表使用完整数据，不再按 5000 行等上限抽样。
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -800,8 +721,6 @@ def generate_dashboard(
         statistics=statistics,
         quality=quality,
         missingness=missingness,
-        time_analysis=time_analysis,
-        time_series=time_series,
         correlation=correlation,
         image_data=image_data,
         export_all_data=export_all_data
