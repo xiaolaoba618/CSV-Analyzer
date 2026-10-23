@@ -8,9 +8,9 @@ import numpy as np
 import pandas as pd
 MAX_CATEGORIES = 15
 MAX_HEATMAP_COLUMNS = 30
+# 全量导出与抽样的分界行数：不超过该值时始终写入全部行；
+# 超过时默认改为代表性抽样，样本规模也取该值（列式存储下 50 万行约 40 MB，可负担）。
 FULL_EXPORT_ROW_LIMIT = 500000
-MAX_TIME_POINTS = 5000
-MAX_NUMERIC_POINTS = 5000
 MAX_IDENTIFIER_VALUES = 300000
 MAX_IDENTIFIER_COMBINATION_VALUES = 300000
 MAX_IDENTIFIER_COMBINATION_FIELDS = 4
@@ -482,7 +482,7 @@ def _prepare_identifier_combinations(
                 continue
     return combinations
 
-def _prepare_table_data(df, variable_types, profile=None, max_points=MAX_NUMERIC_POINTS, full_data=False):
+def _prepare_table_data(df, variable_types, profile=None, max_points=FULL_EXPORT_ROW_LIMIT, full_data=False):
     """交互式报告唯一的「一张表」——行级明细只存这一份。
 
     采用列式存储 + 整数编码（分类列、标识符列的值字典各存一次），
@@ -671,7 +671,7 @@ def _prepare_analysis_data(
             {
                 "export_all_data": bool(export_all_data),
                 "source_row_count": int(len(df)),
-                "sample_limit": (None if export_all_data else MAX_NUMERIC_POINTS),
+                "sample_limit": (None if export_all_data else FULL_EXPORT_ROW_LIMIT),
                 "numeric_truncated": bool(table_payload.get("truncated")),
                 "numeric_row_count": int(table_payload.get("row_count") or 0),
                 "time_truncated": bool(table_payload.get("truncated")),

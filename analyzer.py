@@ -26,7 +26,7 @@ def build_report_title(input_file):
 def analyze_csv(input_file, output_dir="output", progress_callback=None, variable_type_overrides=None, export_all_data=True):
     """执行完整的 CSV 分析流程。
 
-    export_all_data=True（默认）时交互式 Dashboard 的图表使用完整数据，不再按 5000 行抽样。
+    export_all_data=True（默认）时交互式 Dashboard 的图表使用完整数据，超过 50 万行时默认改为抽样 50 万行。
     """
     def report_progress(message, percentage):
         if progress_callback is not None:

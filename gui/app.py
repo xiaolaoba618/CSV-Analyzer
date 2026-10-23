@@ -34,7 +34,6 @@ from analyzer import analyze_csv
 from report.dashboard_generator import (
     FULL_EXPORT_ROW_LIMIT,
     MAX_IDENTIFIER_VALUES,
-    MAX_NUMERIC_POINTS,
     format_size,
 )
 from tools.data_loader import load_csv_preview, SUPPORTED_ENCODINGS
@@ -61,13 +60,13 @@ EXPORT_ALL_TIP = (
     "<b>1. 行级明细（受本选项控制，默认勾选）</b><br>"
     "• 勾选（默认）：交互式报告写入全部数据行，可逐行查看、按标识符查完整记录<br>"
     f"• 超过 {FULL_EXPORT_ROW_LIMIT:,} 行时会自动取消勾选，改为代表性抽样 "
-    f"{MAX_NUMERIC_POINTS:,} 行（按时间等距分层，并按分类变量比例分配名额，"
+    f"{FULL_EXPORT_ROW_LIMIT:,} 行（按时间等距分层，并按分类变量比例分配名额，"
     "尽量保留整体趋势与分布）；确认可接受体积可手动勾选回全量<br>"
     "• 静态报告（report.html）的统计图<b>始终使用全量数据</b>，与本选项无关<br><br>"
     "<b>2. 时间趋势（随行级数据一起变化）</b><br>"
     "趋势图不再单独存储聚合序列，而是由报告内的行级数据<b>实时按时间桶聚合</b>，"
     "因此口径与本选项一致：全量时是全部原始行，抽样时是这 "
-    f"{MAX_NUMERIC_POINTS:,} 行。<br><br>"
+    f"{FULL_EXPORT_ROW_LIMIT:,} 行。<br><br>"
     "<b>3. 标识符：按单个／组合标识符筛选</b><br>"
     "若某个变量被指定为「标识符」（如股票代码、用户 ID、设备号），可在报告里按"
     "单个标识符或多个标识符的组合筛选图表。<br>"
@@ -687,9 +686,9 @@ class CSVAnalyzerGUI(QWidget):
         self.export_info_badge.set_tip(EXPORT_ALL_TIP + identifier_note)
         full_mb = estimate_dashboard_mb(rows, rows, self.preview_variable_types)
         sampled_mb = estimate_dashboard_mb(
-            min(rows, MAX_NUMERIC_POINTS), rows, self.preview_variable_types
+            min(rows, FULL_EXPORT_ROW_LIMIT), rows, self.preview_variable_types
         )
-        if rows <= MAX_NUMERIC_POINTS:
+        if rows <= FULL_EXPORT_ROW_LIMIT:
             self.export_hint_label.setStyleSheet(neutral_style)
             self.export_hint_label.setText(
                 f"共 {rows:,} 行，未超过抽样上限 · 勾选与否报告一致（约 {full_mb:.0f} MB）"
@@ -711,7 +710,7 @@ class CSVAnalyzerGUI(QWidget):
         self.export_hint_label.setStyleSheet(notice_style)
         self.export_hint_label.setText(
             f"共 {rows:,} 行，超过 {FULL_EXPORT_ROW_LIMIT:,} 行阈值，已改为抽样 "
-            f"{MAX_NUMERIC_POINTS:,} 行（约 {sampled_mb:.0f} MB）· "
+            f"{FULL_EXPORT_ROW_LIMIT:,} 行（约 {sampled_mb:.0f} MB）· "
             f"需要全量请勾选（约 {full_mb:.0f} MB）"
         )
     def start_analysis(self):
