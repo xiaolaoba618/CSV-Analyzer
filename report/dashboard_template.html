@@ -4566,6 +4566,328 @@
         };
     }
 
+    /* ========================================================
+       抽稀（thinning）
+
+       图表在大数据集上会退化：Canvas 上每个点是一次绘制调用，
+       50 万点／图时首屏数秒，hover 的命中检测还是 O(N)。这里把
+       「参与计算的点数」和「绘制到画布上的点数」解耦——
+       统计口径仍用全量，只压缩交给 Canvas 的那部分。
+
+       压缩必须保住分布特征，做法是分网格后区别对待：
+
+         · 稀疏网格（离群点、分布尾部）整格保留，一个不丢；
+         · 密集网格按统一比例抽取，保持相对密度与整体形状，不留空洞；
+         · x / y 的全局极值点强制保底，保证包围盒不被裁掉。
+
+       统一比例而非「按记录数配额」是关键：若给稀疏区更多名额，
+       图上密度关系会失真；让稀疏网格整格幸存、其余同比例稀释，
+       既留住异常点又不改变肉眼看到的疏密对比。
+       ======================================================== */
+
+    const MAX_CHART_POINTS = 60000;
+    const MIN_DATASET_POINTS = 800;
+    const ENVELOPE_BINS = 96;
+    const ISO_NEIGHBOR_MAX = 8;
+    const PROTECT_CAP_RATIO = 0.01;
+    const thinnedCharts = {};
+
+    /*
+     * 把整张图的点预算按各数据集的记录数分摊。
+     * 分摊后若超支，反复从最大的一份里收回，避免某一组吃掉全部预算。
+     */
+    function allocatePointBudgets(counts, budget, floor) {
+        const total = counts.reduce(function (sum, count) { return sum + count; }, 0);
+        if (!total || total <= budget) return counts.slice();
+        const minimum = Math.max(1, floor || 0);
+        const quota = counts.map(function (count) {
+            return Math.max(Math.min(count, minimum), Math.floor(budget * count / total));
+        });
+        let reserved = quota.reduce(function (sum, value) { return sum + value; }, 0);
+        let guard = 0;
+        while (reserved > budget && guard < 64) {
+            let target = -1;
+            for (let i = 0; i < quota.length; i++) {
+                if (target < 0 || quota[i] > quota[target]) target = i;
+            }
+            if (quota[target] <= minimum) break;
+            const cut = Math.min(reserved - budget, quota[target] - minimum);
+            quota[target] -= cut;
+            reserved -= cut;
+            guard += 1;
+        }
+        return quota;
+    }
+
+    /*
+     * 返回保留下来的原始下标（升序）；无需抽稀时返回 null。
+     * useY=false 时按一维处理（只沿 x 分格），用于一维散点这种
+     * y 轴不承载信息量的图形。
+     *
+     * 分三段，顺序不能颠倒：
+     *   1) 轮廓保底 —— x 分箱的 y 极值、y 分箱的 x 极值。点云的外边界
+     *      是肉眼判断取值范围的依据，必须精确留下，代价只有几百个点。
+     *   2) 孤立点保底 —— 用远密于平均间距的网格数九宫格邻居，邻居极少
+     *      的就是视觉上的离群点，整批留下，一个不丢。
+     *   3) 其余按统一比例抽稀 —— 均匀抽样不引入任何系统性偏差，
+     *      因此均值、标准差、相关系数都不会被改动。
+     *
+     * 曾经试过「稀疏网格整格保留」，结果低密度区被整体加权，
+     * 标准差虚高 4%、尾部失真；现在只有真正孤立的点享受特权。
+     */
+    function selectThinnedIndices(points, budget, useY) {
+        const count = points.length;
+        if (!count || budget >= count || budget < 2) return null;
+
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        let argMinX = 0, argMaxX = 0, argMinY = 0, argMaxY = 0;
+        for (let i = 0; i < count; i++) {
+            const point = points[i];
+            if (point.x < minX) { minX = point.x; argMinX = i; }
+            if (point.x > maxX) { maxX = point.x; argMaxX = i; }
+            if (!useY) continue;
+            if (point.y < minY) { minY = point.y; argMinY = i; }
+            if (point.y > maxY) { maxY = point.y; argMaxY = i; }
+        }
+        const spanX = maxX - minX;
+        const spanY = useY ? maxY - minY : 0;
+
+        const kept = new Set();
+        const cap = Math.max(4, Math.floor(budget * PROTECT_CAP_RATIO));
+        const protect = function (index) {
+            if (index >= 0 && kept.size < cap) kept.add(index);
+        };
+        protect(argMinX);
+        protect(argMaxX);
+        if (useY) {
+            protect(argMinY);
+            protect(argMaxY);
+        }
+
+        // ---- 1) 轮廓保底 ----
+        if (useY && spanX > 0 && spanY > 0) {
+            const bins = Math.max(8, Math.min(ENVELOPE_BINS, Math.floor(budget / 8)));
+            const colMinIdx = new Array(bins).fill(-1);
+            const colMaxIdx = new Array(bins).fill(-1);
+            const colMinVal = new Array(bins).fill(Infinity);
+            const colMaxVal = new Array(bins).fill(-Infinity);
+            const rowMinIdx = new Array(bins).fill(-1);
+            const rowMaxIdx = new Array(bins).fill(-1);
+            const rowMinVal = new Array(bins).fill(Infinity);
+            const rowMaxVal = new Array(bins).fill(-Infinity);
+            for (let i = 0; i < count; i++) {
+                const point = points[i];
+                const cx = Math.min(bins - 1, Math.floor((point.x - minX) / spanX * bins));
+                if (point.y < colMinVal[cx]) { colMinVal[cx] = point.y; colMinIdx[cx] = i; }
+                if (point.y > colMaxVal[cx]) { colMaxVal[cx] = point.y; colMaxIdx[cx] = i; }
+                const cy = Math.min(bins - 1, Math.floor((point.y - minY) / spanY * bins));
+                if (point.x < rowMinVal[cy]) { rowMinVal[cy] = point.x; rowMinIdx[cy] = i; }
+                if (point.x > rowMaxVal[cy]) { rowMaxVal[cy] = point.x; rowMaxIdx[cy] = i; }
+            }
+            for (let b = 0; b < bins; b++) {
+                if (colMinIdx[b] >= 0) { protect(colMinIdx[b]); protect(colMaxIdx[b]); }
+                if (rowMinIdx[b] >= 0) { protect(rowMinIdx[b]); protect(rowMaxIdx[b]); }
+            }
+        }
+
+        // ---- 2) 孤立点保底 ----
+        const isoSide = Math.max(16, Math.min(200, Math.round(Math.sqrt(count / 20))));
+        const isoCells = new Map();
+        for (let i = 0; i < count; i++) {
+            const point = points[i];
+            const cx = spanX > 0 ? Math.min(isoSide - 1, Math.floor((point.x - minX) / spanX * isoSide)) : 0;
+            const cy = (useY && spanY > 0)
+                ? Math.min(isoSide - 1, Math.floor((point.y - minY) / spanY * isoSide))
+                : 0;
+            const cellKey = cx * isoSide + cy;
+            let bucket = isoCells.get(cellKey);
+            if (!bucket) { bucket = []; isoCells.set(cellKey, bucket); }
+            bucket.push(i);
+        }
+        const sizeOf = function (key) {
+            const bucket = isoCells.get(key);
+            return bucket ? bucket.length : 0;
+        };
+        const ranked = [];
+        isoCells.forEach(function (bucket, cellKey) {
+            const cx = Math.floor(cellKey / isoSide);
+            const cy = cellKey % isoSide;
+            let neighbours = 0;
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dy = -1; dy <= 1; dy++) {
+                    const nx = cx + dx;
+                    const ny = cy + dy;
+                    if (nx < 0 || ny < 0 || nx >= isoSide || ny >= isoSide) continue;
+                    neighbours += sizeOf(nx * isoSide + ny);
+                }
+            }
+            ranked.push({ neighbours: neighbours, bucket: bucket });
+        });
+        /*
+         * 按「邻居越少越优先」消费保底名额：万一孤立点比名额还多，
+         * 至少保证最孤独的那批先进，而不是被遍历顺序挤掉。
+         */
+        ranked.sort(function (a, b) { return a.neighbours - b.neighbours; });
+        for (let k = 0; k < ranked.length && kept.size < cap; k++) {
+            if (ranked[k].neighbours > ISO_NEIGHBOR_MAX) break;
+            const bucket = ranked[k].bucket;
+            for (let j = 0; j < bucket.length && kept.size < cap; j++) protect(bucket[j]);
+        }
+
+        // ---- 3) 其余统一比例抽稀 ----
+        const reservoir = count - kept.size;
+        const remaining = Math.max(0, budget - kept.size);
+        if (reservoir <= 0 || remaining <= 0) {
+            return Array.from(kept).sort(function (a, b) { return a - b; });
+        }
+        const rate = remaining / reservoir;
+        let credit = 0;
+        for (let i = 0; i < count; i++) {
+            if (kept.has(i)) continue;
+            credit += rate;
+            if (credit >= 1) {
+                kept.add(i);
+                credit -= 1;
+            }
+        }
+        return Array.from(kept).sort(function (a, b) { return a - b; });
+    }
+
+    /*
+     * 时间折线：数量级问题是时间轴太长，抽取必须保住峰谷。
+     * 按 x 分箱、每箱保留该序列的极小值与极大值（min-max），
+     * 这样尖峰和异常跳变不会被平均值抹平。
+     * 多序列共用同一份 labels，因此取各序列保留位置的并集，
+     * 缺失位置填 null，交给 spanGaps 拉通。
+     */
+    function thinTimeSeriesShared(labels, seriesList, budget) {
+        const labelCount = labels.length;
+        const seriesCount = seriesList.length;
+        if (!seriesCount || !labelCount) return null;
+        if (labelCount * seriesCount <= budget) return null;
+
+        const perSeries = Math.max(2, Math.floor(budget / seriesCount));
+        const bins = Math.max(1, Math.floor(perSeries / 2));
+        const kept = new Set();
+        const perSeriesKept = [];
+        seriesList.forEach(function (values) {
+            const local = new Set();
+            local.add(0);
+            if (labelCount > 1) local.add(labelCount - 1);
+            const width = labelCount / bins;
+            for (let b = 0; b < bins; b++) {
+                const start = Math.floor(b * width);
+                const end = Math.min(labelCount - 1, Math.floor((b + 1) * width) - 1);
+                let minIndex = -1, maxIndex = -1;
+                let minValue = Infinity, maxValue = -Infinity;
+                for (let i = start; i <= end; i++) {
+                    const value = values[i];
+                    if (value === null || value === undefined || !Number.isFinite(value)) continue;
+                    if (value < minValue) { minValue = value; minIndex = i; }
+                    if (value > maxValue) { maxValue = value; maxIndex = i; }
+                }
+                if (minIndex >= 0) {
+                    local.add(minIndex);
+                    local.add(maxIndex);
+                }
+            }
+            perSeriesKept.push(local);
+            Array.from(local).forEach(function (i) { kept.add(i); });
+        });
+
+        const indices = Array.from(kept).sort(function (a, b) { return a - b; });
+
+        /*
+         * 各序列峰谷位置完全错开时并集会超过预算，退回等距抽样，
+         * 兜住点数上限（此时不再保证逐个尖峰）。
+         */
+        if (indices.length * seriesCount > budget) {
+            const stride = Math.max(1, Math.ceil(labelCount / perSeries));
+            const coarse = [];
+            for (let i = 0; i < labelCount; i += stride) coarse.push(i);
+            if (coarse[coarse.length - 1] !== labelCount - 1) coarse.push(labelCount - 1);
+            return {
+                labels: coarse.map(function (i) { return labels[i]; }),
+                series: seriesList.map(function (values) {
+                    return coarse.map(function (i) { return values[i]; });
+                }),
+                minMax: false
+            };
+        }
+
+        return {
+            labels: indices.map(function (i) { return labels[i]; }),
+            series: seriesList.map(function (values, si) {
+                const local = perSeriesKept[si];
+                return indices.map(function (i) { return local.has(i) ? values[i] : null; });
+            }),
+            minMax: true
+        };
+    }
+
+    /*
+     * 把预算落到一组已经建好的数据集上，并记录本次是否发生过抽稀。
+     */
+    function applyPointBudget(datasets, useY, chartKey) {
+        const counts = datasets.map(function (dataset) { return dataset.data.length; });
+        const totalBefore = counts.reduce(function (sum, count) { return sum + count; }, 0);
+        const budgets = allocatePointBudgets(counts, MAX_CHART_POINTS, MIN_DATASET_POINTS);
+        let totalAfter = 0;
+        datasets.forEach(function (dataset, index) {
+            const indices = selectThinnedIndices(dataset.data, budgets[index], useY);
+            if (indices) {
+                const source = dataset.data;
+                dataset.data = indices.map(function (i) { return source[i]; });
+            }
+            totalAfter += dataset.data.length;
+        });
+        if (totalAfter < totalBefore) {
+            thinnedCharts[chartKey] = { shown: totalAfter, total: totalBefore };
+        } else {
+            delete thinnedCharts[chartKey];
+        }
+    }
+
+    /*
+     * 大数据集的 Chart.js 性能开关：
+     * animation 会按帧重绘全量点；parsing / normalized 跳过每点一次的数据解析。
+     */
+    function withChartPerf(options) {
+        options.animation = false;
+        options.parsing = false;
+        options.normalized = true;
+        return options;
+    }
+
+    function renderThinningNotice() {
+        const anchor = document.getElementById("dataScopeNotice");
+        if (!anchor || !anchor.parentNode) return;
+        let element = document.getElementById("thinningNotice");
+        const keys = Object.keys(thinnedCharts);
+        if (!keys.length) {
+            if (element) element.style.display = "none";
+            return;
+        }
+        if (!element) {
+            element = document.createElement("div");
+            element.id = "thinningNotice";
+            element.className = "data-scope-notice";
+            anchor.parentNode.insertBefore(element, anchor.nextSibling);
+        }
+        element.style.display = "";
+        let shown = 0;
+        let total = 0;
+        keys.forEach(function (key) {
+            shown += thinnedCharts[key].shown;
+            total += thinnedCharts[key].total;
+        });
+        element.textContent =
+            "为保证交互流畅，超出绘制能力的大图已按分布特征抽稀显示：" +
+            "原 " + formatRowCount(total) + " 个点压缩到 " + formatRowCount(shown) + " 个点。" +
+            "稀疏区域与离群点完整保留、密集区域等比例稀释，形状与疏密对比不变；" +
+            "统计口径仍基于全部数据。";
+    }
+
     /*
      * 一维散点的 Y 轴：有分类分组时每条横带显示一个分组名，
      * 没有分组时整张图只有一条带，Y 轴没有信息量，直接隐藏。
@@ -5299,10 +5621,11 @@
                 return;
             }
             hideChartMessage("scatterMessage");
+            applyPointBudget(strip.datasets, false, "scatterChart");
             scatterChart = new Chart(canvas, {
                 type: "scatter",
                 data: { datasets: strip.datasets },
-                options: {
+                options: withChartPerf({
                     responsive: true, maintainAspectRatio: false,
                     plugins: {
                         legend: makeLegendConfig(),
@@ -5317,7 +5640,7 @@
                         x: { title: { display: true, text: xColumn } },
                         y: makeStripYAxis(strip)
                     }
-                }
+                })
             });
             refreshLegendButtons();
             return;
@@ -5364,10 +5687,12 @@
             };
         });
 
+        applyPointBudget(datasets, true, "scatterChart");
+
         scatterChart = new Chart(canvas, {
             type: "scatter",
             data: { datasets },
-            options: {
+            options: withChartPerf({
                 responsive: true, maintainAspectRatio: false,
                 plugins: {
                     legend: makeLegendConfig()
@@ -5376,7 +5701,7 @@
                     x: { title: { display: true, text: xColumn } },
                     y: { title: { display: true, text: "数值" } }
                 }
-            }
+            })
         });
         refreshLegendButtons();
     }
@@ -5571,7 +5896,7 @@
             return;
         }
 
-        const labels = Array.from(new Set(
+        let labels = Array.from(new Set(
             rows.map(function (row) { return isTimeIndex ? row.time_index : row.datetime; })
                 .filter(function (value) { return value !== undefined && value !== null && value !== ""; })
                 .map(String)
@@ -5586,14 +5911,34 @@
             const nb = Array.from(b.series.values()).reduce((sum, values) => sum + values.length, 0);
             return nb - na;
         }).slice(0, 30);
+
+        /*
+         * 时间轴过长时点数本身就超标，必须先算完整口径的序列再抽稀，
+         * 这样坐标轴刻度、tooltip 对应到的仍是同一个时间基准。
+         */
+        const seriesList = entries.map(function (item) {
+            return labels.map(function (label) {
+                return aggregateTimeValues(item.series.get(label), aggregationMode);
+            });
+        });
+        const thinning = thinTimeSeriesShared(labels, seriesList, MAX_CHART_POINTS);
+        if (thinning) {
+            const before = seriesList.reduce(function (sum, values) { return sum + values.length; }, 0);
+            thinnedCharts["timeChart"] = {
+                shown: thinning.labels.length * entries.length,
+                total: before
+            };
+            labels = thinning.labels;
+        } else {
+            delete thinnedCharts["timeChart"];
+        }
+
         const datasets = entries.map(function (item, index) {
             return {
                 label: (categoryColumn ? item.column + "｜" + item.group : item.column) + getChartFilterLabel(),
                 __column: item.column,
                 __group: categoryColumn ? item.group : "",
-                data: labels.map(function (label) {
-                    return aggregateTimeValues(item.series.get(label), aggregationMode);
-                }),
+                data: thinning ? thinning.series[index] : seriesList[index],
                 borderColor: palette[index % palette.length],
                 backgroundColor: palette[index % palette.length],
                 pointRadius: 0, borderWidth: 2, tension: 0.2, spanGaps: true
@@ -5605,7 +5950,7 @@
         timeChart = new Chart(canvas, {
             type: "line",
             data: { labels, datasets },
-            options: {
+            options: withChartPerf({
                 responsive: true, maintainAspectRatio: false,
                 interaction: { mode: "index", intersect: false },
                 plugins: {
@@ -5621,7 +5966,7 @@
                         beginAtZero: false
                     }
                 }
-            }
+            })
         });
         updateTimeAggregationHint();
         refreshLegendButtons();
@@ -5682,10 +6027,11 @@
                 return;
             }
             hideChartMessage("normalizedScatterMessage");
+            applyPointBudget(strip.datasets, false, "normalizedScatterChart");
             normalizedScatterChart = new Chart(canvas, {
                 type: "scatter",
                 data: { datasets: strip.datasets },
-                options: {
+                options: withChartPerf({
                     responsive: true, maintainAspectRatio: false,
                     plugins: {
                         legend: makeLegendConfig(),
@@ -5700,7 +6046,7 @@
                         x: { min: 0, max: 1, title: { display: true, text: xTitle } },
                         y: makeStripYAxis(strip)
                     }
-                }
+                })
             });
             refreshLegendButtons();
             return;
@@ -5748,10 +6094,12 @@
             };
         });
 
+        applyPointBudget(datasets, true, "normalizedScatterChart");
+
         normalizedScatterChart = new Chart(canvas, {
             type: "scatter",
             data: { datasets },
-            options: {
+            options: withChartPerf({
                 responsive: true, maintainAspectRatio: false,
                 plugins: {
                     legend: makeLegendConfig()
@@ -5760,7 +6108,7 @@
                     x: { min: 0, max: 1, title: { display: true, text: xTitle } },
                     y: { min: 0, max: 1, title: { display: true, text: "归一化值" } }
                 }
-            }
+            })
         });
         refreshLegendButtons();
     }
@@ -5848,15 +6196,33 @@
                 sumRanges.set(entry.column, range);
             });
         }
-        const datasets = aggregated.map(function (entry, index) {
+        /*
+         * 归一化是仿射单调变换，不会改变各段内极值所在的位置，
+         * 所以先把完整口径的值归一化，再做 min-max 抽稀，两者互不干扰。
+         */
+        const seriesList = aggregated.map(function (entry) {
             const range = sumRanges.get(entry.column);
+            return entry.values.map(function (value) {
+                return Number.isFinite(value) ? normalizeNumericValue(value, entry.column, range) : null;
+            });
+        });
+        const thinning = thinTimeSeriesShared(labels, seriesList, MAX_CHART_POINTS);
+        if (thinning) {
+            const before = seriesList.reduce(function (sum, values) { return sum + values.length; }, 0);
+            thinnedCharts["normalizedTimeChart"] = {
+                shown: thinning.labels.length * entries.length,
+                total: before
+            };
+        } else {
+            delete thinnedCharts["normalizedTimeChart"];
+        }
+        const axisLabels = thinning ? thinning.labels : labels;
+        const datasets = aggregated.map(function (entry, index) {
             return {
                 label: (categoryColumn ? entry.column + "｜" + entry.group : entry.column) + getChartFilterLabel(),
                 __column: entry.column,
                 __group: categoryColumn ? entry.group : "",
-                data: entry.values.map(function (value) {
-                    return Number.isFinite(value) ? normalizeNumericValue(value, entry.column, range) : null;
-                }),
+                data: thinning ? thinning.series[index] : seriesList[index],
                 borderColor: palette[index % palette.length],
                 backgroundColor: palette[index % palette.length],
                 pointRadius: 0, borderWidth: 2, tension: 0.2, spanGaps: true
@@ -5867,8 +6233,8 @@
         if (normalizedTimeChart) normalizedTimeChart.destroy();
         normalizedTimeChart = new Chart(canvas, {
             type: "line",
-            data: { labels, datasets },
-            options: {
+            data: { labels: axisLabels, datasets },
+            options: withChartPerf({
                 responsive: true, maintainAspectRatio: false,
                 interaction: { mode: "index", intersect: false },
                 plugins: {
@@ -5885,7 +6251,7 @@
                         }
                     }
                 }
-            }
+            })
         });
     }
 
@@ -6210,6 +6576,8 @@
          * 只清理数值相关的图表，不能整体 return——否则分类相关的三张图
          * 也会被一起跳过，只剩一张空卡片。
          */
+        // 每次重绘先清空，避免隐藏图表留下过期的抽稀统计。
+        Object.keys(thinnedCharts).forEach(function (key) { delete thinnedCharts[key]; });
         if (!selectedColumns.length) {
             const kinds = getAvailableDataKinds();
             if (kinds.hasNumeric) {
@@ -6271,6 +6639,7 @@
         renderCategoryChart();
         renderNumericByCategoryChart();
         renderCategoryPieChart();
+        renderThinningNotice();
         refreshLegendButtons();
     }
 
