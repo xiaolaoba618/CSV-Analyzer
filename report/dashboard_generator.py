@@ -8,16 +8,11 @@ import numpy as np
 import pandas as pd
 MAX_CATEGORIES = 15
 MAX_HEATMAP_COLUMNS = 30
-MAX_SCATTER_POINTS = 5000
-MAX_SCATTER_VARIABLES = 10
-MAX_HISTOGRAM_POINTS = 10000
-MAX_BOX_OUTLIERS = 200
 MAX_TIME_POINTS = 5000
 MAX_NUMERIC_POINTS = 5000
 MAX_IDENTIFIER_VALUES = 300000
 MAX_IDENTIFIER_COMBINATION_VALUES = 300000
 MAX_IDENTIFIER_COMBINATION_FIELDS = 4
-MAX_IDENTIFIER_CHART_ROWS = 2000000
 
 def _make_json_safe(value):
     """将 Python、NumPy 和 pandas 对象转换为可安全序列化的值。"""
@@ -416,84 +411,6 @@ def _prepare_table_preview(df, max_rows=10):
         rows.append([_make_json_safe(row[column]) for column in head.columns])
     return {"columns": columns, "rows": rows}
 
-def _prepare_numeric_data(df, variable_types, max_points=MAX_NUMERIC_POINTS, full_data=False):
-    numeric_columns = [
-        column
-        for column, info
-        in variable_types.items()
-        if (info.get("detected_type") == "numeric" and column in df.columns)
-    ]
-    if not numeric_columns:
-        return {
-            "columns": [],
-            "rows": [],
-            "source_row_count": int(len(df)),
-            "row_count": 0,
-            "truncated": False,
-            "sample_limit": (None if full_data else MAX_NUMERIC_POINTS)
-        }
-    categorical_columns = _get_categorical_columns(df, variable_types)
-    time_type, time_column = _resolve_time_column(df, variable_types)
-    # 保持采样行的分类字段与数值字段对应。
-    columns_to_use = list(dict.fromkeys(numeric_columns + categorical_columns))
-    # 时间列仅用于生成逐行可比较的时间值，不作为数值/分类变量暴露。
-    if time_column is not None and time_column not in columns_to_use:
-        columns_to_use = columns_to_use + [time_column]
-    data = df[columns_to_use].copy()
-    source_row_count = int(len(data))
-    if full_data or max_points is None:
-        truncated = False
-    elif len(data) > max_points:
-        # 默认路径：超过上限时抽一份「代表性子集」供交互图表使用。
-        # 先按时间排序再等距分层、层内随机取行，让 5,000 行也能铺满
-        # 完整时间跨度（趋势不中断），同时保持各类别构成比例（分布不失真）。
-        data = _representative_sample(
-            data,
-            max_points,
-            order_values=_resolve_order_values(data, variable_types),
-            group_columns=_resolve_group_columns(data, variable_types, max_points)
-        )
-        truncated = True
-    else:
-        truncated = False
-    data = data.replace([np.inf, -np.inf], np.nan)
-    time_values = None
-    if time_column is not None:
-        try:
-            time_values = _time_series_values(data[time_column], time_type)
-        except Exception:
-            time_values = None
-    rows = []
-    for position, (_, row) in enumerate(data.iterrows()):
-        item = {}
-        for column in numeric_columns:
-            value = row[column]
-            if pd.isna(value):
-                item[str(column)] = None
-            else:
-                try:
-                    item[str(column)] = float(value)
-                except (TypeError, ValueError):
-                    item[str(column)] = None
-        for column in categorical_columns:
-            value = row[column]
-            item[str(column)] = ("缺失" if pd.isna(value) else str(value))
-        if time_values is not None:
-            try:
-                time_value = time_values.iloc[position]
-            except (KeyError, IndexError):
-                time_value = None
-            item["__time__"] = (None if time_value is None or pd.isna(time_value) else float(time_value))
-        rows.append(item)
-    return {
-        "columns": [str(column) for column in numeric_columns],
-        "rows": rows,
-        "source_row_count": source_row_count,
-        "row_count": int(len(rows)),
-        "truncated": bool(truncated),
-        "sample_limit": (None if full_data else MAX_NUMERIC_POINTS)
-    }
-
 def _get_identifier_columns(df, variable_types, profile=None):
     columns = []
     for column, info in (variable_types or {}).items():
@@ -564,83 +481,89 @@ def _prepare_identifier_combinations(
                 continue
     return combinations
 
-def _prepare_identifier_chart_data(df, variable_types, profile=None, max_rows=MAX_IDENTIFIER_CHART_ROWS):
-    """准备供标识符查询联动图表的紧凑数据。"""
-    identifier_columns = _get_identifier_columns(df, variable_types, profile)
-    numeric_columns = [column for column, info in variable_types.items() if info.get("detected_type") == "numeric" and column in df.columns]
-    if not identifier_columns or not numeric_columns or df.empty:
-        return {"available": False, "reason": "no_identifier_or_numeric_data"}
-    truncated = len(df) > max_rows
-    if truncated:
-        # 交互图表仅保留确定性的采样子集。
-        data = df.iloc[:max_rows].copy()
-    else:
-        data = df.copy()
-    time_index_columns = [
-        column for column, info in variable_types.items()
-        if info.get("detected_type") == "time_index" and column in data.columns
+def _prepare_table_data(df, variable_types, profile=None, max_points=MAX_NUMERIC_POINTS, full_data=False):
+    """交互式报告唯一的「一张表」——行级明细只存这一份。
+
+    采用列式存储 + 整数编码（分类列、标识符列的值字典各存一次），
+    相比逐行的 JSON 对象数组可省约 4 倍体积。
+    数值分布、变量关系、时间变化、归一化、按类别统计、标识符筛选
+    等所有交互图表都从这一份数据派生，不再各存一份行数据。
+    """
+    numeric_columns = [
+        column
+        for column, info
+        in (variable_types or {}).items()
+        if (info.get("detected_type") == "numeric" and column in df.columns)
     ]
-    datetime_columns = [
-        column for column, info in variable_types.items()
-        if info.get("detected_type") == "datetime" and column in data.columns
-    ]
-    categorical_columns = _get_categorical_columns(data, variable_types)
-    time_type = None
-    time_column = None
-    if time_index_columns:
-        time_type = "time_index"
-        time_column = time_index_columns[0]
-    elif datetime_columns:
-        time_type = "datetime"
-        time_column = "DATETIME" if "DATETIME" in data.columns else datetime_columns[0]
-    result = {
-        "available": True,
-        "row_count": int(len(data)),
+    categorical_columns = list(_get_categorical_columns(df, variable_types))
+    identifier_columns = list(_get_identifier_columns(df, variable_types, profile))
+    time_type, time_column = _resolve_time_column(df, variable_types)
+    columns_to_use = list(dict.fromkeys(
+        list(numeric_columns) + categorical_columns + identifier_columns
+    ))
+    if (time_column is not None and time_column in df.columns and time_column not in columns_to_use):
+        columns_to_use.append(time_column)
+    empty_payload = {
+        "available": False,
+        "row_count": 0,
         "source_row_count": int(len(df)),
-        "truncated": bool(truncated),
-        "identifier_columns": {},
+        "truncated": False,
+        "sample_limit": (None if full_data else max_points),
         "numeric_columns": [str(column) for column in numeric_columns],
-        "numeric": {},
         "categorical_columns": [str(column) for column in categorical_columns],
-        "categorical": {},
+        "identifier_columns": [str(column) for column in identifier_columns],
         "time_type": time_type,
-        "time_column": str(time_column) if time_column is not None else None,
+        "time_column": (str(time_column) if time_column is not None else None),
+        "numeric": {},
+        "categorical": {},
+        "identifiers": {},
         "time_values": []
     }
-    # 标识符使用整数编码，减少重复存储长字符串。
-    for column in identifier_columns:
-        try:
-            codes, uniques = pd.factorize(data[column].astype("string").fillna("缺失"), sort=False)
-            result["identifier_columns"][str(column)] = {
-                "values": [str(value) for value in uniques],
-                "codes": [int(code) for code in codes]
-            }
-        except Exception:
-            continue
+    if (df.empty or not columns_to_use):
+        return empty_payload
+    data = df[columns_to_use].copy()
+    source_row_count = int(len(data))
+    truncated = False
+    if (not full_data and max_points and len(data) > max_points):
+        # 抽一份代表性子集：先按时间等距分层，再按分类组合比例保底。
+        data = _representative_sample(
+            data,
+            max_points,
+            order_values=_resolve_order_values(data, variable_types),
+            group_columns=_resolve_group_columns(data, variable_types, max_points)
+        )
+        truncated = True
+    data = data.replace([np.inf, -np.inf], np.nan)
+    payload = dict(empty_payload)
+    payload.update({
+        "available": True,
+        "row_count": int(len(data)),
+        "source_row_count": source_row_count,
+        "truncated": bool(truncated)
+    })
     for column in numeric_columns:
         try:
             series = pd.to_numeric(data[column], errors="coerce")
-            result["numeric"][str(column)] = [None if pd.isna(value) else float(value) for value in series]
+            payload["numeric"][str(column)] = [None if pd.isna(value) else float(value) for value in series]
         except Exception:
-            result["numeric"][str(column)] = [None] * len(data)
-    # 分类值同样编码，便于复用筛选逻辑。
-    for column in categorical_columns:
+            payload["numeric"][str(column)] = [None] * len(data)
+    for key, columns in (("categorical", categorical_columns), ("identifiers", identifier_columns)):
+        for column in columns:
+            try:
+                codes, uniques = pd.factorize(data[column].astype("string").fillna("缺失"), sort=False)
+                payload[key][str(column)] = {
+                    "values": [str(value) for value in uniques],
+                    "codes": [int(code) for code in codes]
+                }
+            except Exception:
+                continue
+    if (time_column is not None and time_column in data.columns):
         try:
-            codes, uniques = pd.factorize(data[column].astype("string").fillna("缺失"), sort=False)
-            result["categorical"][str(column)] = {"values": [str(value) for value in uniques], "codes": [int(code) for code in codes]}
+            values = _time_series_values(data[time_column], time_type)
+            payload["time_values"] = [None if pd.isna(value) else float(value) for value in values]
         except Exception:
-            continue
-    if time_column is not None:
-        try:
-            if time_type == "time_index":
-                series = pd.to_numeric(data[time_column], errors="coerce")
-                result["time_values"] = [None if pd.isna(value) else float(value) for value in series]
-            else:
-                series = pd.to_datetime(data[time_column], errors="coerce")
-                result["time_values"] = [None if pd.isna(value) else int(value.value // 1_000_000) for value in series]
-        except Exception:
-            result["time_values"] = [None] * len(data)
-    return result
+            payload["time_values"] = [None] * len(data)
+    return payload
 
 def _prepare_categorical_data(df, variable_types, max_categories=20):
     categorical_types = {"categorical", "categorical_numeric", "binary", "boolean"}
@@ -660,239 +583,12 @@ def _prepare_categorical_data(df, variable_types, max_categories=20):
             continue
     return result
 
-def _prepare_time_data(df, variable_types, max_points=MAX_TIME_POINTS, full_data=False):
-    datetime_columns = [
-        column
-        for column, info in variable_types.items()
-        if (info.get("detected_type") == "datetime" and column in df.columns)
-    ]
-    time_index_columns = [
-        column
-        for column, info in variable_types.items()
-        if (info.get("detected_type") == "time_index" and column in df.columns)
-    ]
-    numeric_columns = [
-        column
-        for column, info in variable_types.items()
-        if (info.get("detected_type") == "numeric" and column in df.columns)
-    ]
-    if not datetime_columns and time_index_columns:
-        time_column = time_index_columns[0]
-        numeric_columns = [column for column in numeric_columns if column != time_column]
-        if not numeric_columns:
-            return {
-                "available": False,
-                "time_type": "time_index",
-                "time_column": str(time_column),
-                "datetime_column": None,
-                "columns": [],
-                "rows": []
-            }
-        categorical_columns = _get_categorical_columns(df, variable_types)
-        columns_to_use = list(dict.fromkeys([time_column] + numeric_columns + categorical_columns))
-        data = df[columns_to_use].copy()
-        data[time_column] = pd.to_numeric(data[time_column], errors="coerce")
-        data = data.dropna(subset=[time_column])
-        if data.empty:
-            return {
-                "available": False,
-                "time_type": "time_index",
-                "time_column": str(time_column),
-                "datetime_column": None,
-                "columns": [str(column) for column in numeric_columns],
-                "rows": []
-            }
-        data = data.sort_values(time_column)
-        source_row_count = int(len(data))
-        if full_data or max_points is None:
-            truncated = False
-        elif len(data) > max_points:
-            data = _representative_sample(
-                data,
-                max_points,
-                order_values=data[time_column],
-                group_columns=_resolve_group_columns(data, variable_types, max_points)
-            )
-            truncated = True
-        else:
-            truncated = False
-        rows = []
-        for _, row in data.iterrows():
-            item = {"time_index": float(row[time_column])}
-            for column in numeric_columns:
-                value = row[column]
-                item[str(column)] = (None if pd.isna(value) else float(value))
-            for column in categorical_columns:
-                value = row[column]
-                item[str(column)] = ("缺失" if pd.isna(value) else str(value))
-            rows.append(item)
-        return {
-            "available": True,
-            "time_type": "time_index",
-            "time_column": str(time_column),
-            "datetime_column": None,
-            "columns": [str(column) for column in numeric_columns],
-            "rows": rows,
-            "source_row_count": source_row_count,
-            "row_count": int(len(rows)),
-            "truncated": bool(truncated),
-            "sample_limit": (None if full_data else MAX_TIME_POINTS)
-        }
-    if not datetime_columns:
-        return {"available": False, "time_type": None, "time_column": None, "datetime_column": None, "columns": [], "rows": []}
-    if not numeric_columns:
-        return {
-            "available": False,
-            "time_type": "datetime",
-            "time_column": str(datetime_columns[0]),
-            "datetime_column": str(datetime_columns[0]),
-            "columns": [],
-            "rows": []
-        }
-    if "DATETIME" in datetime_columns:
-        datetime_column = "DATETIME"
-    else:
-        datetime_column = datetime_columns[0]
-    categorical_columns = _get_categorical_columns(df, variable_types)
-    columns_to_use = list(dict.fromkeys([datetime_column] + numeric_columns + categorical_columns))
-    data = df[columns_to_use].copy()
-    data[datetime_column] = pd.to_datetime(data[datetime_column], errors="coerce")
-    data = data.dropna(subset=[datetime_column])
-    if data.empty:
-        return {
-            "available": False,
-            "time_type": "datetime",
-            "time_column": str(datetime_column),
-            "datetime_column": str(datetime_column),
-            "columns": [str(column) for column in numeric_columns],
-            "rows": []
-        }
-    data = data.sort_values(datetime_column)
-    source_row_count = int(len(data))
-    if full_data or max_points is None:
-        truncated = False
-    elif len(data) > max_points:
-        data = _representative_sample(
-            data,
-            max_points,
-            order_values=data[datetime_column],
-            group_columns=_resolve_group_columns(data, variable_types, max_points)
-        )
-        truncated = True
-    else:
-        truncated = False
-    rows = []
-    for _, row in data.iterrows():
-        item = {"datetime": row[datetime_column].isoformat()}
-        for column in numeric_columns:
-            value = row[column]
-            if pd.isna(value):
-                item[str(column)] = None
-            else:
-                try:
-                    item[str(column)] = float(value)
-                except (TypeError, ValueError):
-                    item[str(column)] = None
-        for column in categorical_columns:
-            value = row[column]
-            item[str(column)] = ("缺失" if pd.isna(value) else str(value))
-        rows.append(item)
-    return {
-        "available": True,
-        "time_type": "datetime",
-        "time_column": str(datetime_column),
-        "datetime_column": str(datetime_column),
-        "columns": [str(column) for column in numeric_columns],
-        "rows": rows,
-        "source_row_count": source_row_count,
-        "row_count": int(len(rows)),
-        "truncated": bool(truncated),
-        "sample_limit": (None if full_data else MAX_TIME_POINTS)
-    }
-
 def _get_numeric_columns(df, variable_types):
     return [column for column, info in variable_types.items() if (info.get("detected_type") == "numeric" and column in df.columns)]
 
 def _get_categorical_columns(df, variable_types):
     categorical_types = {"categorical", "categorical_numeric", "binary", "boolean"}
     return [column for column, info in variable_types.items() if (info.get("detected_type") in categorical_types and column in df.columns)]
-
-def _prepare_histogram_data(df, numeric_columns, bins=30, max_points=MAX_HISTOGRAM_POINTS, full_data=False):
-    result = {}
-    for column in numeric_columns:
-        try:
-            series = pd.to_numeric(df[column], errors="coerce")
-            series = (series.replace([np.inf, -np.inf], np.nan).dropna())
-            if len(series) == 0:
-                continue
-            if not full_data and max_points is not None and len(series) > max_points:
-                series = series.sample(n=max_points, random_state=42)
-            if series.nunique() <= 1:
-                continue
-            counts, edges = np.histogram(series.to_numpy(), bins=bins)
-            labels = [
-                (
-                    f"{edges[i]:.2f} - "
-                    f"{edges[i + 1]:.2f}"
-                )
-                for i
-                in range(len(edges) - 1)
-            ]
-            result[str(column)] = {
-                "labels": labels,
-                "counts": [int(value) for value in counts],
-                "mean": float(series.mean()),
-                "median": float(series.median())
-            }
-        except Exception:
-            continue
-    return result
-
-def _prepare_boxplot_data(df, numeric_columns, full_data=False):
-    result = {}
-    for column in numeric_columns:
-        try:
-            series = pd.to_numeric(df[column], errors="coerce")
-            series = (series.replace([np.inf, -np.inf], np.nan).dropna())
-            if len(series) == 0:
-                continue
-            if series.nunique() <= 1:
-                continue
-            q1 = float(series.quantile(0.25))
-            median = float(series.quantile(0.50))
-            q3 = float(series.quantile(0.75))
-            iqr = q3 - q1
-            lower_fence = (q1 - 1.5 * iqr)
-            upper_fence = (q3 + 1.5 * iqr)
-            lower_values = series[series >= lower_fence]
-            upper_values = series[series <= upper_fence]
-            lower = (float(lower_values.min()) if len(lower_values) > 0 else float(series.min()))
-            upper = (float(upper_values.max()) if len(upper_values) > 0 else float(series.max()))
-            outliers = series[(series < lower_fence) | (series > upper_fence)]
-            if not full_data and len(outliers) > MAX_BOX_OUTLIERS:
-                outliers = outliers.sample(n=MAX_BOX_OUTLIERS, random_state=42)
-            result[str(column)] = {
-                "min":
-                    float(series.min()),
-                "q1":
-                    q1,
-                "median":
-                    median,
-                "q3":
-                    q3,
-                "max":
-                    float(series.max()),
-                "lower":
-                    lower,
-                "upper":
-                    upper,
-                "mean":
-                    float(series.mean()),
-                "outliers": [float(value) for value in outliers]
-            }
-        except Exception:
-            continue
-    return result
 
 def _prepare_categorical_chart_data(df, categorical_columns, max_categories=MAX_CATEGORIES):
     result = {}
@@ -907,34 +603,6 @@ def _prepare_categorical_chart_data(df, categorical_columns, max_categories=MAX_
             result[str(column)] = {"categories": [str(value) for value in counts.index], "counts": [int(value) for value in counts.values]}
         except Exception:
             continue
-    return result
-
-def _prepare_scatter_chart_data(df, numeric_columns, max_variables=MAX_SCATTER_VARIABLES, max_points=MAX_SCATTER_POINTS):
-    selected_columns = numeric_columns[:max_variables]
-    result = []
-    for i in range(len(selected_columns)):
-        for j in range(i + 1, len(selected_columns)):
-            column_x = selected_columns[i]
-            column_y = selected_columns[j]
-            try:
-                pair = df[[column_x, column_y]].copy()
-                pair = (pair.replace([np.inf, -np.inf], np.nan).dropna())
-                if len(pair) < 2:
-                    continue
-                if (pair[column_x].nunique() <= 1 or pair[column_y].nunique() <= 1):
-                    continue
-                if len(pair) > max_points:
-                    pair = pair.sample(n=max_points, random_state=42)
-                points = []
-                for _, row in pair.iterrows():
-                    try:
-                        points.append({"x": float(row[column_x]), "y": float(row[column_y])})
-                    except (TypeError, ValueError):
-                        continue
-                if points:
-                    result.append({"x_column": str(column_x), "y_column": str(column_y), "points": points})
-            except Exception:
-                continue
     return result
 
 def _prepare_correlation_chart_data(correlation, method="spearman", max_columns=MAX_HEATMAP_COLUMNS):
@@ -1035,26 +703,6 @@ def _prepare_time_series_chart_data(time_series):
             result[str(column)] = {"frequency": str(frequency), "data": data}
     return result
 
-def _prepare_dashboard_visualizations(df, variable_types, correlation=None, time_analysis=None, time_series=None, full_data=False):
-    numeric_columns = _get_numeric_columns(df, variable_types)
-    categorical_columns = _get_categorical_columns(df, variable_types)
-    return {
-        "histograms":
-            _prepare_histogram_data(df, numeric_columns, full_data=full_data),
-        "boxplots":
-            _prepare_boxplot_data(df, numeric_columns, full_data=full_data),
-        "categorical_bars":
-            _prepare_categorical_chart_data(df, categorical_columns),
-        "scatter_plots":
-            _prepare_scatter_chart_data(df, numeric_columns),
-        "correlation_heatmap":
-            _prepare_correlation_chart_data(correlation),
-        "time_analysis":
-            _prepare_time_analysis_chart_data(time_analysis),
-        "time_series":
-            _prepare_time_series_chart_data(time_series)
-    }
-
 def _prepare_analysis_data(
     df,
     profile=None,
@@ -1070,25 +718,20 @@ def _prepare_analysis_data(
     variable_types = {}
     if profile:
         variable_types = profile.get("variable_types", {})
-    numeric_payload = _prepare_numeric_data(df, variable_types, full_data=export_all_data)
-    time_payload = _prepare_time_data(df, variable_types, full_data=export_all_data)
+    table_payload = _prepare_table_data(df, variable_types, profile, full_data=export_all_data)
     return {
         "dataset":
             _prepare_dataset_summary(df),
         "variables":
             _prepare_variable_summary(df, variable_types),
-        "numeric_data":
-            numeric_payload,
+        "table_data":
+            table_payload,
         "categorical_data":
             _prepare_categorical_data(df, variable_types),
         "identifier_data":
             _prepare_identifier_data(df, variable_types, profile),
         "identifier_combinations":
             _prepare_identifier_combinations(df, variable_types, profile),
-        "identifier_chart_data":
-            _prepare_identifier_chart_data(df, variable_types, profile),
-        "time_data":
-            time_payload,
         "statistics":
             statistics or {},
         "quality":
@@ -1101,28 +744,16 @@ def _prepare_analysis_data(
             time_series or {},
         "correlation":
             correlation or {},
-        "visualizations":
-            _prepare_dashboard_visualizations(
-                df=df,
-                variable_types=variable_types,
-                correlation=correlation,
-                time_analysis=time_analysis,
-                time_series=time_series,
-                full_data=export_all_data
-            ),
         "data_scope":
             {
                 "export_all_data": bool(export_all_data),
                 "source_row_count": int(len(df)),
                 "sample_limit": (None if export_all_data else MAX_NUMERIC_POINTS),
-                "numeric_truncated": bool(numeric_payload.get("truncated")),
-                "numeric_row_count": int(numeric_payload.get("row_count") or 0),
-                "time_truncated": bool(time_payload.get("truncated")),
-                "time_row_count": int(time_payload.get("row_count") or 0),
-                "sampled": bool(
-                    not export_all_data
-                    and (numeric_payload.get("truncated") or time_payload.get("truncated"))
-                )
+                "numeric_truncated": bool(table_payload.get("truncated")),
+                "numeric_row_count": int(table_payload.get("row_count") or 0),
+                "time_truncated": bool(table_payload.get("truncated")),
+                "time_row_count": int(table_payload.get("row_count") or 0),
+                "sampled": bool(not export_all_data and table_payload.get("truncated"))
             },
         "time_filter":
             _prepare_time_filter(df, variable_types),

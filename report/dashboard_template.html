@@ -3553,7 +3553,10 @@
                 const chartCount = filteredRows.length;
                 const truncationNote = chartData.truncated ? "（图表明细受报告数据上限影响）" : "";
                 if (!chartCount) {
-                    showResult("找到：" + query + "，共有 " + formatNumber(counts[exactIndex] || 0) + " 条记录，但没有在图表联动数据中找到对应记录。", true);
+                    const sampleNote = chartData.truncated
+                        ? "该记录未包含在交互图表所用的样本中；如需查看完整记录，请勾选「导出全部数据」后重新生成。"
+                        : "但当前报告没有对应的图表联动数据。";
+                    showResult("找到：" + query + "，共有 " + formatNumber(counts[exactIndex] || 0) + " 条记录，" + sampleNote, true);
                     return;
                 }
 
@@ -3615,7 +3618,10 @@
             }
 
             if (!filteredRows.length) {
-                showResult("找到该标识符组合，共 " + formatNumber(row.count) + " 条记录，但没有在图表联动数据中找到对应记录。", true);
+                const sampleNote = chartData.truncated
+                    ? "该组合未包含在交互图表所用的样本中；如需查看完整记录，请勾选「导出全部数据」后重新生成。"
+                    : "但当前报告没有对应的图表联动数据。";
+                showResult("找到该标识符组合，共 " + formatNumber(row.count) + " 条记录，" + sampleNote, true);
                 return;
             }
 
@@ -3668,8 +3674,8 @@
         const distributionSelect = document.getElementById("distributionVariable");
         if (!select1 || !select2 || !categorySelect || !distributionSelect) return;
 
-        const numericData = dashboard.numeric_data || {};
-        const columns = Array.isArray(numericData.columns) ? numericData.columns : [];
+        const numericData = dashboard.table_data || {};
+        const columns = Array.isArray(numericData.numeric_columns) ? numericData.numeric_columns : [];
         const categoricalData = dashboard.categorical_data || {};
         const categoricalColumns = Object.keys(categoricalData);
 
@@ -3850,6 +3856,7 @@
 
     let activeIdentifierFilter = null;
     let activeIdentifierRowsCache = null;
+    let globalRowsCache = null;
     let activeVariableFilters = [];
     let activeVariableRowsCache = null;
     let activeTimeRange = null;
@@ -4155,7 +4162,7 @@
             const label = document.createElement("label");
             label.textContent = "筛选变量";
             const select = document.createElement("select");
-            const numericColumns = Array.isArray(dashboard.numeric_data?.columns) ? dashboard.numeric_data.columns : [];
+            const numericColumns = Array.isArray(dashboard.table_data?.numeric_columns) ? dashboard.table_data.numeric_columns : [];
             const categoricalColumns = Object.keys(dashboard.categorical_data || {});
             const numericGroup = document.createElement("optgroup");
             numericGroup.label = "数值变量";
@@ -4273,55 +4280,46 @@
         addRow();
     }
 
-    function getIdentifierChartData() {
-        const data = dashboard.identifier_chart_data || {};
+    function getTableData() {
+        const data = dashboard.table_data || null;
         return data && data.available ? data : null;
     }
 
-    function getActiveChartRows() {
-        const source = getIdentifierChartData();
+    function getIdentifierChartData() {
+        return getTableData();
+    }
 
-        // 标识符筛选失败时不回退到全局数据，避免误导。
-        if (!activeIdentifierFilter) {
-            return dashboard.numeric_data?.rows || [];
-        }
-
-        if (!source) {
-            return [];
-        }
-
-        if (activeIdentifierRowsCache) return activeIdentifierRowsCache;
-
-        const identifierColumns = source.identifier_columns || {};
-        const targets = {};
-        for (const [column, value] of Object.entries(activeIdentifierFilter)) {
-            const item = identifierColumns[column];
-            if (!item || !Array.isArray(item.values) || !Array.isArray(item.codes)) return [];
-            const code = item.values.indexOf(String(value));
-            if (code < 0) return [];
-            targets[column] = code;
-        }
-
+    /*
+     * 从列式表重建行对象。
+     * filter 为 {标识符列: 取值} 时按整数编码匹配，只保留命中的行。
+     * 行里同时给出 __time__（数值毫秒/索引）与 datetime / time_index，
+     * 供时间范围筛选和时间序列图使用。
+     */
+    function buildTableRows(source, filter) {
         const rowCount = Number(source.row_count || 0);
         const numeric = source.numeric || {};
         const categorical = source.categorical || {};
+        const identifiers = source.identifiers || {};
         const numericColumns = Array.isArray(source.numeric_columns) ? source.numeric_columns : [];
         const categoricalColumns = Array.isArray(source.categorical_columns) ? source.categorical_columns : [];
         const timeValues = Array.isArray(source.time_values) ? source.time_values : [];
-
-        // 数据载荷异常时返回空结果，不回退到全局数据。
-        for (const column of Object.keys(targets)) {
-            const codes = identifierColumns[column].codes;
-            if (!Array.isArray(codes) || codes.length < rowCount) {
-                return [];
+        const targets = {};
+        if (filter) {
+            for (const [column, value] of Object.entries(filter)) {
+                const item = identifiers[column];
+                if (!item || !Array.isArray(item.values) || !Array.isArray(item.codes)) return [];
+                const code = item.values.indexOf(String(value));
+                if (code < 0) return [];
+                targets[column] = code;
             }
         }
+        const isTimeIndex = source.time_type === "time_index";
+        const isDatetime = source.time_type === "datetime";
         const rows = [];
-
         for (let index = 0; index < rowCount; index++) {
             let matched = true;
             for (const column of Object.keys(targets)) {
-                if (identifierColumns[column].codes[index] !== targets[column]) {
+                if (identifiers[column].codes[index] !== targets[column]) {
                     matched = false;
                     break;
                 }
@@ -4339,17 +4337,32 @@
                 const code = item.codes?.[index];
                 row[column] = code === undefined || item.values?.[code] === undefined ? "缺失" : item.values[code];
             });
-            if (source.time_type === "time_index") {
-                row.time_index = timeValues[index];
-            } else if (source.time_type === "datetime") {
-                const timestamp = timeValues[index];
-                row.datetime = timestamp == null ? null : new Date(timestamp).toISOString();
+            const timeValue = timeValues[index];
+            if (timeValue !== undefined && timeValue !== null) {
+                row.__time__ = timeValue;
+                if (isTimeIndex) {
+                    row.time_index = timeValue;
+                } else if (isDatetime) {
+                    row.datetime = new Date(timeValue).toISOString();
+                }
             }
             rows.push(row);
         }
-
-        activeIdentifierRowsCache = rows;
         return rows;
+    }
+
+    function getActiveChartRows() {
+        const source = getTableData();
+        if (!source) return [];
+        // 标识符筛选失败时不回退到全局数据，避免误导。
+        if (!activeIdentifierFilter) {
+            if (globalRowsCache) return globalRowsCache;
+            globalRowsCache = buildTableRows(source, null);
+            return globalRowsCache;
+        }
+        if (activeIdentifierRowsCache) return activeIdentifierRowsCache;
+        activeIdentifierRowsCache = buildTableRows(source, activeIdentifierFilter);
+        return activeIdentifierRowsCache;
     }
 
     function getChartFilterLabel() {
@@ -4403,15 +4416,8 @@
         column
     ) {
 
-        const numericData =
-            dashboard.numeric_data;
-
-
         if (
-            !numericData ||
-            !Array.isArray(
-                numericData.rows
-            )
+            !getTableData()
         ) {
 
             return [];
@@ -5400,23 +5406,13 @@
     }
 
     function getTimeAggregationRows() {
-        const globalTimeData = dashboard.time_data || {};
-        const identifierTimeData = getIdentifierChartData();
-        const useIdentifierData = Boolean(activeIdentifierFilter && identifierTimeData);
-        const base = useIdentifierData
-            ? getActiveChartRows()
-            : (Array.isArray(globalTimeData.rows) ? globalTimeData.rows : []);
-        const isTimeIndex = useIdentifierData
-            ? identifierTimeData.time_type === "time_index"
-            : globalTimeData.time_type === "time_index";
-        const rows = applyRowFilters(base);
+        const tableData = getTableData();
+        const rows = applyRowFilters(getActiveChartRows());
         return {
             rows: rows,
-            isTimeIndex: isTimeIndex,
-            truncated: useIdentifierData ? false : Boolean(globalTimeData.truncated),
-            sourceRowCount: useIdentifierData
-                ? rows.length
-                : (Number(globalTimeData.source_row_count) || rows.length)
+            isTimeIndex: Boolean(tableData) && tableData.time_type === "time_index",
+            truncated: Boolean(tableData && tableData.truncated),
+            sourceRowCount: Number(tableData?.source_row_count) || rows.length
         };
     }
 
@@ -5463,8 +5459,8 @@
     }
 
     function getAvailableDataKinds() {
-        const numericColumns = (dashboard.numeric_data && Array.isArray(dashboard.numeric_data.columns))
-            ? dashboard.numeric_data.columns
+        const numericColumns = (dashboard.table_data && Array.isArray(dashboard.table_data.numeric_columns))
+            ? dashboard.table_data.numeric_columns
             : [];
         return {
             numericColumns: numericColumns,
@@ -5472,7 +5468,7 @@
             // 变量关系需要两个以上的数值变量才能形成对比对。
             hasPair: numericColumns.length > 1,
             hasCategorical: Object.keys(dashboard.categorical_data || {}).length > 0,
-            hasTime: Boolean(dashboard.time_data && dashboard.time_data.available)
+            hasTime: Boolean(dashboard.table_data && dashboard.table_data.available && dashboard.table_data.time_type)
         };
     }
 
@@ -5517,8 +5513,8 @@
         const control = document.getElementById("timeAggregationControl");
         const select = document.getElementById("timeAggregation");
         if (!control || !select) return;
-        const globalTimeData = dashboard.time_data || {};
-        if (!globalTimeData.available && !getIdentifierChartData()) {
+        const tableData = getTableData();
+        if (!tableData || !tableData.time_type) {
             control.style.display = "none";
             return;
         }
@@ -5540,28 +5536,18 @@
             return;
         }
 
-        const globalTimeData = dashboard.time_data || {};
-        const identifierTimeData = getIdentifierChartData();
-        const useIdentifierData = Boolean(activeIdentifierFilter && identifierTimeData);
-        const timeData = useIdentifierData ? {
-            available: true,
-            time_type: identifierTimeData.time_type,
-            time_column: identifierTimeData.time_column,
-            datetime_column: identifierTimeData.time_column,
-            columns: identifierTimeData.numeric_columns || []
-        } : globalTimeData;
-        const baseTimeRows = useIdentifierData ? getActiveChartRows() : (Array.isArray(timeData.rows) ? timeData.rows : []);
-        const rows = applyRowFilters(baseTimeRows);
+        const tableData = getTableData();
+        const rows = applyRowFilters(getActiveChartRows());
         const numericColumns = getSelectedNumericColumns();
         const categoryColumn = document.getElementById("categoricalVariable")?.value || "";
-        if (!timeData.available || !rows.length || !numericColumns.length) {
+        if (!tableData || !rows.length || !numericColumns.length) {
             showChartMessage("timeMessage", "当前没有可用于时间序列分析的数据。");
             if (timeChart) { timeChart.destroy(); timeChart = null; }
             refreshLegendButtons();
             return;
         }
 
-        const isTimeIndex = timeData.time_type === "time_index";
+        const isTimeIndex = tableData.time_type === "time_index";
         const grouped = new Map();
         numericColumns.forEach(function (numericColumn) {
             rows.forEach(function (row) {
@@ -5626,7 +5612,7 @@
                     legend: makeLegendConfig()
                 },
                 scales: {
-                    x: { title: { display: true, text: timeData.time_column || timeData.datetime_column || "时间" }, ticks: { maxTicksLimit: 12, maxRotation: 45 } },
+                    x: { title: { display: true, text: tableData.time_column || "时间" }, ticks: { maxTicksLimit: 12, maxRotation: 45 } },
                     y: {
                         title: {
                             display: true,
@@ -5656,7 +5642,7 @@
             min = overrideRange.min;
             max = overrideRange.max;
         } else if (!Number.isFinite(min) || !Number.isFinite(max)) {
-            const values = (dashboard.numeric_data?.rows || []).map(function (row) { return Number(row[column]); }).filter(Number.isFinite);
+            const values = getFilteredChartRows().map(function (row) { return Number(row[column]); }).filter(Number.isFinite);
             if (!values.length) return null;
             min = Math.min(...values);
             max = Math.max(...values);
@@ -5787,27 +5773,17 @@
             return;
         }
 
-        const globalTimeData = dashboard.time_data || {};
-        const identifierTimeData = getIdentifierChartData();
-        const useIdentifierData = Boolean(activeIdentifierFilter && identifierTimeData);
-        const timeData = useIdentifierData ? {
-            available: true,
-            time_type: identifierTimeData.time_type,
-            time_column: identifierTimeData.time_column,
-            datetime_column: identifierTimeData.time_column,
-            columns: identifierTimeData.numeric_columns || []
-        } : globalTimeData;
-        const baseTimeRows = useIdentifierData ? getActiveChartRows() : (Array.isArray(timeData.rows) ? timeData.rows : []);
-        const rows = applyRowFilters(baseTimeRows);
+        const tableData = getTableData();
+        const rows = applyRowFilters(getActiveChartRows());
         const numericColumns = getSelectedNumericColumns();
         const categoryColumn = document.getElementById("categoricalVariable")?.value || "";
-        if (!timeData.available || !rows.length || !numericColumns.length) {
+        if (!tableData || !rows.length || !numericColumns.length) {
             showChartMessage("normalizedTimeMessage", "当前没有可用于归一化时间序列分析的数据。");
             if (normalizedTimeChart) { normalizedTimeChart.destroy(); normalizedTimeChart = null; }
             return;
         }
 
-        const isTimeIndex = timeData.time_type === "time_index";
+        const isTimeIndex = tableData.time_type === "time_index";
         const grouped = new Map();
         numericColumns.forEach(function (numericColumn) {
             rows.forEach(function (row) {
@@ -5899,7 +5875,7 @@
                     legend: makeLegendConfig()
                 },
                 scales: {
-                    x: { title: { display: true, text: timeData.time_column || timeData.datetime_column || "时间" }, ticks: { maxTicksLimit: 12, maxRotation: 45 } },
+                    x: { title: { display: true, text: tableData.time_column || "时间" }, ticks: { maxTicksLimit: 12, maxRotation: 45 } },
                     y: {
                         min: 0,
                         max: 1,
