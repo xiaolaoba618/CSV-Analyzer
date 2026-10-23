@@ -4861,10 +4861,17 @@
      * 大数据集的 Chart.js 性能开关：
      * animation 会按帧重绘全量点；parsing / normalized 跳过每点一次的数据解析。
      */
-    function withChartPerf(options) {
+    function withChartPerf(options, keepParsing) {
         options.animation = false;
-        options.parsing = false;
         options.normalized = true;
+        /*
+         * parsing:false 只对「数据已经是 {x, y} 对象」的散点图成立。
+         * 折线图的数据是「labels + 数值数组」：关掉解析后，点不会被填成
+         * 类别下标，x 坐标缺失 —— 坐标轴刻度照常画出，整条线却一个点都不显示。
+         * 所以折线图必须保留解析：代价只是一遍扫描，真正的开销在动画和绘制，
+         * 这两项已经分别关掉了。
+         */
+        options.parsing = keepParsing === true ? true : false;
         return options;
     }
 
@@ -4884,17 +4891,8 @@
             anchor.parentNode.insertBefore(element, anchor.nextSibling);
         }
         element.style.display = "";
-        let shown = 0;
-        let total = 0;
-        keys.forEach(function (key) {
-            shown += thinnedCharts[key].shown;
-            total += thinnedCharts[key].total;
-        });
         element.textContent =
-            "为保证交互流畅，超出绘制能力的大图已按分布特征抽稀显示：" +
-            "原 " + formatRowCount(total) + " 个点压缩到 " + formatRowCount(shown) + " 个点。" +
-            "稀疏区域与离群点完整保留、密集区域等比例稀释，形状与疏密对比不变；" +
-            "统计口径仍基于全部数据。";
+            "为保证交互流畅，超出绘制能力的大图已按分布特征抽稀显示；统计口径不受影响。";
     }
 
     /*
@@ -5603,40 +5601,66 @@
        ======================================================== */
 
     /*
-     * 稳健坐标轴范围：数据带长尾离群值时（如个别极端记录把 y 轴
-     * 顶到主体的十几倍），主体会被压成底部一条细线。这里取
-     * 0.5%–99.5% 分位作为显示范围并留 6% 边距；仅当长尾确实
-     * 显著（全距超过截取范围的 1.6 倍）时才截取，正常分布不受影响。
-     * 范围外的点被画布裁掉，tooltip 统计仍走全量口径。
+     * 极端离群点过滤：按箱线图的「远极异常」定义（Q1/Q3 各外推 3×IQR）
+     * 给每个轴定一个合理范围，范围外的点直接不画。
+     *
+     * 只影响散点图的显示，不改变任何统计口径。个别极端值会把坐标轴
+     * 顶到主体的十几倍，主体被压成一条线——与其缩放坐标轴把点藏起来，
+     * 不如按统一规则把超出范围太多的点滤掉，剩下的部分自然铺满画布。
+     *
+     * 兜底：若要剔除的点超过总数的 20%，说明分布本身就是宽幅的
+     * （不是_tail，而是两个量级并存的数据），此时一个点都不滤。
      */
-    function robustScaleBounds(datasets, pick) {
-        const values = [];
-        datasets.forEach(function (dataset) {
-            (dataset.data || []).forEach(function (point) {
-                const value = pick(point);
-                if (Number.isFinite(value)) values.push(value);
-            });
-        });
-        if (values.length < 100) return null;
-        values.sort(function (a, b) { return a - b; });
-        const min = values[0];
-        const max = values[values.length - 1];
-        const span = max - min;
-        if (!(span > 0)) return null;
-        const at = function (ratio) {
-            return values[Math.min(values.length - 1, Math.max(0, Math.round(ratio * (values.length - 1))))];
-        };
-        const low = at(0.005);
-        const high = at(0.995);
-        const trimmedSpan = high - low;
-        if (!(trimmedSpan > 0) || span < trimmedSpan * 1.6) return null;
-        const pad = trimmedSpan * 0.06;
-        return { min: low - pad, max: high + pad };
+    const OUTLIER_IQR_K = 3;
+    const OUTLIER_MAX_DROP_RATIO = 0.2;
+    const OUTLIER_MIN_POINTS = 200;
+
+    function quantileOfSorted(sorted, ratio) {
+        if (!sorted.length) return 0;
+        const position = Math.min(sorted.length - 1, Math.max(0, Math.round(ratio * (sorted.length - 1))));
+        return sorted[position];
     }
 
-    function axisTitleWithClip(text, bounds) {
-        if (!text) return text;
-        return bounds ? text + "（尾部离群值超出显示范围，已截取）" : text;
+    function iqrFence(values) {
+        if (values.length < OUTLIER_MIN_POINTS) return null;
+        values.sort(function (a, b) { return a - b; });
+        const q1 = quantileOfSorted(values, 0.25);
+        const q3 = quantileOfSorted(values, 0.75);
+        const iqr = q3 - q1;
+        if (!(iqr > 0)) return null;
+        return [q1 - OUTLIER_IQR_K * iqr, q3 + OUTLIER_IQR_K * iqr];
+    }
+
+    function filterScatterOutliers(datasets, useY) {
+        const total = datasets.reduce(function (sum, dataset) {
+            return sum + (dataset.data ? dataset.data.length : 0);
+        }, 0);
+        if (total < OUTLIER_MIN_POINTS) return 0;
+        const xs = [];
+        const ys = useY ? [] : null;
+        datasets.forEach(function (dataset) {
+            (dataset.data || []).forEach(function (point) {
+                if (Number.isFinite(point.x)) xs.push(point.x);
+                if (ys && Number.isFinite(point.y)) ys.push(point.y);
+            });
+        });
+        const xFence = iqrFence(xs);
+        const yFence = ys ? iqrFence(ys) : null;
+        if (!xFence && !yFence) return 0;
+        let dropped = 0;
+        const filtered = datasets.map(function (dataset) {
+            const kept = (dataset.data || []).filter(function (point) {
+                const insideX = !xFence || (Number.isFinite(point.x) && point.x >= xFence[0] && point.x <= xFence[1]);
+                const insideY = !yFence || (Number.isFinite(point.y) && point.y >= yFence[0] && point.y <= yFence[1]);
+                if (insideX && insideY) return true;
+                dropped += 1;
+                return false;
+            });
+            return Object.assign({}, dataset, { data: kept });
+        });
+        if (!dropped || dropped > total * OUTLIER_MAX_DROP_RATIO) return 0;
+        datasets.forEach(function (dataset, index) { dataset.data = filtered[index].data; });
+        return dropped;
     }
 
     function renderScatterChart(xColumn, yColumns, categoryColumn = "") {
@@ -5667,8 +5691,8 @@
                 return;
             }
             hideChartMessage("scatterMessage");
+            filterScatterOutliers(strip.datasets, false);
             applyPointBudget(strip.datasets, false, "scatterChart", SCATTER_MAX_POINTS);
-            const stripXBounds = robustScaleBounds(strip.datasets, function (point) { return point.x; });
             scatterChart = new Chart(canvas, {
                 type: "scatter",
                 data: { datasets: strip.datasets },
@@ -5684,11 +5708,7 @@
                         }
                     },
                     scales: {
-                        x: {
-                            title: { display: true, text: axisTitleWithClip(xColumn, stripXBounds) },
-                            min: stripXBounds ? stripXBounds.min : undefined,
-                            max: stripXBounds ? stripXBounds.max : undefined
-                        },
+                        x: { title: { display: true, text: xColumn } },
                         y: makeStripYAxis(strip)
                     }
                 })
@@ -5738,9 +5758,8 @@
             };
         });
 
+        filterScatterOutliers(datasets, true);
         applyPointBudget(datasets, true, "scatterChart", SCATTER_MAX_POINTS);
-        const scatterXBounds = robustScaleBounds(datasets, function (point) { return point.x; });
-        const scatterYBounds = robustScaleBounds(datasets, function (point) { return point.y; });
 
         scatterChart = new Chart(canvas, {
             type: "scatter",
@@ -5751,16 +5770,8 @@
                     legend: makeLegendConfig()
                 },
                 scales: {
-                    x: {
-                        title: { display: true, text: axisTitleWithClip(xColumn, scatterXBounds) },
-                        min: scatterXBounds ? scatterXBounds.min : undefined,
-                        max: scatterXBounds ? scatterXBounds.max : undefined
-                    },
-                    y: {
-                        title: { display: true, text: axisTitleWithClip("数值", scatterYBounds) },
-                        min: scatterYBounds ? scatterYBounds.min : undefined,
-                        max: scatterYBounds ? scatterYBounds.max : undefined
-                    }
+                    x: { title: { display: true, text: xColumn } },
+                    y: { title: { display: true, text: "数值" } }
                 }
             })
         });
@@ -6027,7 +6038,7 @@
                         beginAtZero: false
                     }
                 }
-            })
+            }, true)
         });
         updateTimeAggregationHint();
         refreshLegendButtons();
@@ -6312,7 +6323,7 @@
                         }
                     }
                 }
-            })
+            }, true)
         });
     }
 
