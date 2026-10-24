@@ -907,6 +907,59 @@
         }
 
 
+        /*
+         * 分类类别数量可能远超一屏能容纳的条数，图表只画当前页，
+         * 用翻页条把其余类别依次调出来，保证每个类别都能看到。
+         */
+        .category-pager {
+
+            display:
+                flex;
+
+            align-items:
+                center;
+
+            justify-content:
+                center;
+
+            gap:
+                12px;
+
+            margin:
+                -4px 0
+                14px;
+        }
+
+
+        .category-pager
+        .category-pager-label {
+
+            color:
+                var(--text-soft);
+
+            font-size:
+                13px;
+
+            font-variant-numeric:
+                tabular-nums;
+        }
+
+
+        .category-pager
+        .legend-button {
+
+            padding:
+                5px
+                14px;
+
+            font-size:
+                12px;
+
+            font-weight:
+                500;
+        }
+
+
         .chart-control-hint {
 
             color:
@@ -2405,6 +2458,15 @@
                     tabindex="0"
                 >!</span>
             </div>
+            <div class="control" id="timeGranularityControl" style="display:none;">
+                <label for="timeGranularity">时间粒度</label>
+                <select id="timeGranularity">
+                    <option value="raw">全部时间点</option>
+                    <option value="hour">按小时聚合</option>
+                    <option value="day">按天聚合</option>
+                </select>
+                <span class="chart-control-hint" id="timeGranularityHint"></span>
+            </div>
         </div>
 
 
@@ -2604,6 +2666,13 @@
                         <option value="mean">均值</option>
                         <option value="sum">合计</option>
                     </select>
+                    <span class="chart-control-hint" id="numericByCategoryPagerHint"></span>
+                </div>
+
+                <div class="category-pager" id="numericByCategoryPager" style="display:none;">
+                    <button type="button" id="numericByCategoryPrev" class="legend-button">上一页</button>
+                    <span class="category-pager-label" id="numericByCategoryPageLabel"></span>
+                    <button type="button" id="numericByCategoryNext" class="legend-button">下一页</button>
                 </div>
 
                 <div class="chart-wrapper">
@@ -3754,6 +3823,24 @@
             });
         }
 
+        const prevCategoryPage = document.getElementById("numericByCategoryPrev");
+        const nextCategoryPage = document.getElementById("numericByCategoryNext");
+        if (prevCategoryPage) {
+            prevCategoryPage.addEventListener("click", function () {
+                if (numericByCategoryPage <= 0) return;
+                numericByCategoryPage -= 1;
+                renderNumericByCategoryChart();
+                refreshLegendButtons();
+            });
+        }
+        if (nextCategoryPage) {
+            nextCategoryPage.addEventListener("click", function () {
+                numericByCategoryPage += 1;
+                renderNumericByCategoryChart();
+                refreshLegendButtons();
+            });
+        }
+
         const statModeSelect = document.getElementById("categoryStatMode");
         const pieModeSelect = document.getElementById("categoryPieMode");
         if (statModeSelect) {
@@ -4586,6 +4673,9 @@
        ======================================================== */
 
     const MAX_CHART_POINTS = 60000;
+    // 超过这个时间点数量，选「全部时间点」时给出卡顿提醒。
+    const RAW_TIME_WARNING_THRESHOLD = 5000;
+
     /*
      * 散点图单独用更小的预算：散点的悬停命中检测逐点扫描，
      * 6 万点在浏览器里拖动/悬停会明显卡顿；2 万点配合分布特征
@@ -5813,6 +5903,109 @@
         };
     }
 
+    /*
+     * 时间粒度：原始时间列常常精确到秒（每一单一个时间戳），
+     * 几十万个 x 刻度会让折线图直接卡死。这里允许把同一小时
+     * （或同一天）的记录并成一个时间点再画。
+     *
+     * 只在时间列确实带有时分秒时才出现这个选项 —— 纯日期数据
+     * 本来就不会有刻度过多的问题。
+     */
+    function datetimeHasClock(tableData) {
+        const values = Array.isArray(tableData && tableData.time_values) ? tableData.time_values : [];
+        const DAY_MS = 86400000;
+        for (let index = 0; index < values.length; index++) {
+            const value = Number(values[index]);
+            if (!Number.isFinite(value)) continue;
+            // 时间戳是毫秒；整日对齐的日期列对 86400000 取余必为 0。
+            if (Math.abs(value % DAY_MS) > 1) return true;
+        }
+        return false;
+    }
+
+    function getTimeGranularity() {
+        const select = document.getElementById("timeGranularity");
+        if (!select || select.disabled) return "raw";
+        const value = select.value;
+        return value === "hour" || value === "day" ? value : "raw";
+    }
+
+    function timeBucketOf(rawTime, granularity) {
+        const text = String(rawTime);
+        // 行里的时间统一是 ISO 串，截取前缀即可完成分桶：
+        // YYYY-MM-DDTHH 是小时桶，YYYY-MM-DD 是天桶。
+        if (granularity === "hour") return text.length > 13 ? text.slice(0, 13) : text;
+        if (granularity === "day") return text.length > 10 ? text.slice(0, 10) : text;
+        return text;
+    }
+
+    function formatTimeBucketLabel(bucket, granularity) {
+        if (granularity === "hour" && bucket.length === 13) {
+            return bucket.slice(0, 10) + " " + bucket.slice(11, 13) + ":00";
+        }
+        return bucket;
+    }
+
+    /*
+     * 统计某个粒度下的时间点数量。行对象数组本身是缓存的，所以按
+     * 「同一份 rows 引用 + 同一粒度」缓存结果，只在数据或粒度真正
+     * 变化时才重新扫一遍。
+     */
+    let rawTimeBucketCache = { rows: null, count: 0 };
+    let coarseTimeBucketCache = { rows: null, granularity: "", count: 0 };
+
+    function countUniqueTimeBuckets(rows, isTimeIndex, granularity) {
+        const isRaw = granularity === "raw";
+        const cache = isRaw ? rawTimeBucketCache : coarseTimeBucketCache;
+        if (cache.rows === rows && (isRaw || cache.granularity === granularity)) {
+            return cache.count;
+        }
+        const times = new Set();
+        rows.forEach(function (row) {
+            const raw = isTimeIndex ? row.time_index : row.datetime;
+            if (raw === undefined || raw === null || raw === "") return;
+            times.add(timeBucketOf(raw, granularity));
+        });
+        cache.rows = rows;
+        cache.count = times.size;
+        if (!isRaw) cache.granularity = granularity;
+        return times.size;
+    }
+
+    function countUniqueTimePoints(granularity) {
+        const info = getTimeAggregationRows();
+        return countUniqueTimeBuckets(info.rows, info.isTimeIndex, granularity);
+    }
+
+    function updateTimeGranularityHint() {
+        const control = document.getElementById("timeGranularityControl");
+        const hint = document.getElementById("timeGranularityHint");
+        if (!control || !hint) return;
+        if (control.style.display === "none") {
+            hint.textContent = "";
+            return;
+        }
+        const granularity = getTimeGranularity();
+        const bucketCount = countUniqueTimePoints(granularity);
+        if (!bucketCount) {
+            hint.textContent = "当前没有可用的时间点。";
+            return;
+        }
+        if (granularity === "raw") {
+            hint.textContent = bucketCount > RAW_TIME_WARNING_THRESHOLD
+                ? "当前为全部 " + bucketCount.toLocaleString() +
+                  " 个时间点，数量较多时图表可能明显卡顿；建议改用「按小时聚合」。"
+                : "当前为全部 " + bucketCount.toLocaleString() + " 个时间点。";
+            return;
+        }
+        if (granularity !== "hour" && granularity !== "day") return;
+        const unit = granularity === "hour" ? "小时" : "天";
+        hint.textContent =
+            "已按" + unit + "聚合：" + countUniqueTimePoints("raw").toLocaleString() +
+            " 个原始时间点归并为 " + bucketCount.toLocaleString() + " 个" + unit + "度点（同一" +
+            unit + "内取" + (getTimeAggregationMode() === "sum" ? "合计" : "均值") + "）。";
+    }
+
     function updateTimeAggregationHint() {
         // 说明改为悬停徽章显示，不再常驻在选项下方占用版面。
         const hint = document.getElementById("timeAggregationBadge");
@@ -5823,7 +6016,7 @@
         info.rows.forEach(function (row) {
             const raw = info.isTimeIndex ? row.time_index : row.datetime;
             if (raw === undefined || raw === null || raw === "") return;
-            times.add(String(raw));
+            times.add(timeBucketOf(raw, getTimeGranularity()));
             counted += 1;
         });
         if (!counted || !times.size) {
@@ -5921,6 +6114,37 @@
             renderNormalizedTimeChart();
         });
         updateTimeAggregationHint();
+        initializeTimeGranularity();
+    }
+
+    function initializeTimeGranularity() {
+        const control = document.getElementById("timeGranularityControl");
+        const select = document.getElementById("timeGranularity");
+        if (!control || !select) return;
+        const tableData = getTableData();
+        const available =
+            Boolean(tableData) && tableData.available && tableData.time_type === "datetime" &&
+            datetimeHasClock(tableData);
+        if (!available) {
+            control.style.display = "none";
+            select.disabled = true;
+            updateTimeGranularityHint();
+            return;
+        }
+        control.style.display = "";
+        select.disabled = false;
+        // 时间点已经多到会拖慢渲染时，默认先按小时归并；用户随时可以切回全部。
+        if (countUniqueTimePoints("raw") > RAW_TIME_WARNING_THRESHOLD) {
+            select.value = "hour";
+        } else {
+            select.value = "raw";
+        }
+        select.addEventListener("change", function () {
+            renderTimeChart();
+            renderNormalizedTimeChart();
+            updateTimeAggregationHint();
+        });
+        updateTimeGranularityHint();
     }
 
 
@@ -5945,6 +6169,7 @@
         }
 
         const isTimeIndex = tableData.time_type === "time_index";
+        const granularity = getTimeGranularity();
         const grouped = new Map();
         numericColumns.forEach(function (numericColumn) {
             rows.forEach(function (row) {
@@ -5955,7 +6180,7 @@
                 const key = numericColumn + "\u0000" + group;
                 if (!grouped.has(key)) grouped.set(key, { column: numericColumn, group: group, series: new Map() });
                 const series = grouped.get(key).series;
-                const timeKey = String(rawTime);
+                const timeKey = timeBucketOf(rawTime, granularity);
                 if (!series.has(timeKey)) series.set(timeKey, []);
                 series.get(timeKey).push(value);
             });
@@ -5971,11 +6196,11 @@
         let labels = Array.from(new Set(
             rows.map(function (row) { return isTimeIndex ? row.time_index : row.datetime; })
                 .filter(function (value) { return value !== undefined && value !== null && value !== ""; })
-                .map(String)
+                .map(function (value) { return timeBucketOf(value, granularity); })
         )).sort(function (a, b) {
             if (isTimeIndex) return Number(a) - Number(b);
             return a.localeCompare(b);
-        });
+        }).map(function (bucket) { return formatTimeBucketLabel(bucket, granularity); });
         const palette = ["#4f46e5", "#0ea5e9", "#16a34a", "#f59e0b", "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#64748b", "#ec4899"];
         const aggregationMode = getTimeAggregationMode();
         const entries = Array.from(grouped.values()).sort((a, b) => {
@@ -6041,6 +6266,7 @@
             }, true)
         });
         updateTimeAggregationHint();
+        updateTimeGranularityHint();
         refreshLegendButtons();
     }
 
@@ -6204,6 +6430,7 @@
         }
 
         const isTimeIndex = tableData.time_type === "time_index";
+        const granularity = getTimeGranularity();
         const grouped = new Map();
         numericColumns.forEach(function (numericColumn) {
             rows.forEach(function (row) {
@@ -6214,7 +6441,7 @@
                 const key = numericColumn + "\\u0000" + group;
                 if (!grouped.has(key)) grouped.set(key, { column: numericColumn, group: group, series: new Map() });
                 const series = grouped.get(key).series;
-                const timeKey = String(rawTime);
+                const timeKey = timeBucketOf(rawTime, granularity);
                 if (!series.has(timeKey)) series.set(timeKey, []);
                 series.get(timeKey).push(value);
             });
@@ -6229,11 +6456,11 @@
         const labels = Array.from(new Set(
             rows.map(function (row) { return isTimeIndex ? row.time_index : row.datetime; })
                 .filter(function (value) { return value !== undefined && value !== null && value !== ""; })
-                .map(String)
+                .map(function (value) { return timeBucketOf(value, granularity); })
         )).sort(function (a, b) {
             if (isTimeIndex) return Number(a) - Number(b);
             return a.localeCompare(b);
-        });
+        }).map(function (bucket) { return formatTimeBucketLabel(bucket, granularity); });
         const palette = ["#4f46e5", "#0ea5e9", "#16a34a", "#f59e0b", "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#64748b", "#ec4899"];
         const entries = Array.from(grouped.values()).sort(function (a, b) {
             const na = Array.from(a.series.values()).reduce(function (sum, values) { return sum + values.length; }, 0);
@@ -6441,6 +6668,57 @@
         return select && select.value === "count" ? "count" : "percent";
     }
 
+    /*
+     * 「数值变量按类别统计」每次最多画 CATEGORY_PAGE_SIZE 个类别，
+     * 其余的靠翻页调出来 —— 一张图塞进几百根柱子既看不清也画不动。
+     */
+    const CATEGORY_PAGE_SIZE = 15;
+    let numericByCategoryPage = 0;
+    let numericByCategoryPageKey = "";
+
+    function numericByCategoryPagingKey(categoryColumn) {
+        return [
+            categoryColumn || "",
+            activeIdentifierFilter ? JSON.stringify(activeIdentifierFilter) : "",
+            activeVariableFilters.map(function (filter) {
+                return filter.column + ":" + JSON.stringify(filter.values || [filter.min, filter.max]);
+            }).join("|"),
+            activeTimeRange ? activeTimeRange.min + "~" + activeTimeRange.max : ""
+        ].join("#");
+    }
+
+    function updateNumericByCategoryPager(pageCount, total) {
+        const pager = document.getElementById("numericByCategoryPager");
+        const label = document.getElementById("numericByCategoryPageLabel");
+        const hint = document.getElementById("numericByCategoryPagerHint");
+        const prev = document.getElementById("numericByCategoryPrev");
+        const next = document.getElementById("numericByCategoryNext");
+        if (!pager) return;
+        if (!total || pageCount <= 1) {
+            pager.style.display = "none";
+            if (hint) hint.textContent = total ? "共 " + total.toLocaleString() + " 个类别" : "";
+            return;
+        }
+        pager.style.display = "";
+        if (label) {
+            label.textContent =
+                "第 " + (numericByCategoryPage + 1) + " / " + pageCount + " 页（共 " +
+                total.toLocaleString() + " 个类别，每页 " + CATEGORY_PAGE_SIZE + " 个）";
+        }
+        if (hint) {
+            const from = numericByCategoryPage * CATEGORY_PAGE_SIZE + 1;
+            const to = Math.min(total, (numericByCategoryPage + 1) * CATEGORY_PAGE_SIZE);
+            hint.textContent = "当前显示第 " + from.toLocaleString() + "–" + to.toLocaleString() + " 个类别";
+        }
+        if (prev) prev.disabled = numericByCategoryPage <= 0;
+        if (next) next.disabled = numericByCategoryPage >= pageCount - 1;
+    }
+
+    function resetNumericByCategoryPaging() {
+        numericByCategoryPage = 0;
+        numericByCategoryPageKey = "";
+    }
+
     function renderNumericByCategoryChart() {
         const canvas = document.getElementById("numericByCategoryChart");
         if (!canvas) return;
@@ -6476,10 +6754,23 @@
                 item.count += 1;
             });
         });
-        const labels = Array.from(groupCounts.entries())
+        const allCategoryLabels = Array.from(groupCounts.entries())
             .sort(function (a, b) { return b[1] - a[1]; })
-            .map(function (entry) { return entry[0]; })
-            .slice(0, 15);
+            .map(function (entry) { return entry[0]; });
+        // 换了分组维度或筛选条件后回到第一页，否则会停在一个已经不存在的页码上。
+        const pagingKey = numericByCategoryPagingKey(categoryColumn);
+        if (pagingKey !== numericByCategoryPageKey) {
+            numericByCategoryPageKey = pagingKey;
+            numericByCategoryPage = 0;
+        }
+        const pageCount = Math.max(1, Math.ceil(allCategoryLabels.length / CATEGORY_PAGE_SIZE));
+        if (numericByCategoryPage >= pageCount) numericByCategoryPage = pageCount - 1;
+        if (numericByCategoryPage < 0) numericByCategoryPage = 0;
+        updateNumericByCategoryPager(pageCount, allCategoryLabels.length);
+        const labels = allCategoryLabels.slice(
+            numericByCategoryPage * CATEGORY_PAGE_SIZE,
+            (numericByCategoryPage + 1) * CATEGORY_PAGE_SIZE
+        );
         if (!labels.length) {
             showChartMessage("numericByCategoryMessage", "所选变量组合没有有效数据。");
             if (window.numericByCategoryChartInstance) { window.numericByCategoryChartInstance.destroy(); window.numericByCategoryChartInstance = null; }
