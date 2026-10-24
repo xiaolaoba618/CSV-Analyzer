@@ -2465,7 +2465,13 @@
                     <option value="hour">按小时聚合</option>
                     <option value="day">按天聚合</option>
                 </select>
-                <span class="chart-control-hint" id="timeGranularityHint"></span>
+                <span
+                    class="info-badge"
+                    id="timeGranularityBadge"
+                    role="img"
+                    aria-label="时间粒度说明"
+                    tabindex="0"
+                >!</span>
             </div>
         </div>
 
@@ -2483,11 +2489,13 @@
             <button type="button" class="legend-button" id="hideAllGroupDatasets">隐藏全部分组</button>
             <button type="button" class="legend-button" id="showAllGroupDatasets">显示全部分组</button>
             <button type="button" class="legend-button" id="invertGroupDatasets">反选</button>
-            <span class="legend-toolbar-hint">
-                分类取值过多时，可先「隐藏全部分组」，再点击下方图例逐个挑出需要的分组。
-                已选择「分类分组」变量时，点击图例会一次性隐藏／恢复该分组在所选变量下的全部数据。
-                「数值分布」按分组堆叠，「数值变量按类别统计」按数据变量显隐，「分类变量占比」按扇区显隐；这里的批量操作对它们同样生效。
-            </span>
+            <span
+                class="info-badge"
+                role="img"
+                aria-label="分组图例说明"
+                tabindex="0"
+                data-tip="分类取值过多时，可先「隐藏全部分组」，再点击下方图例逐个挑出需要的分组。已选择「分类分组」变量时，点击图例会一次性隐藏／恢复该分组在所选变量下的全部数据。「数值分布」按分组堆叠，「数值变量按类别统计」按数据变量显隐，「分类变量占比」按扇区显隐；这里的批量操作对它们同样生效。"
+            >!</span>
         </div>
 
         <div class="chart-grid">
@@ -2666,7 +2674,14 @@
                         <option value="mean">均值</option>
                         <option value="sum">合计</option>
                     </select>
-                    <span class="chart-control-hint" id="numericByCategoryPagerHint"></span>
+                    <label class="chart-toggle"><input type="checkbox" id="categoryUnifiedScale"> 统一各页尺度</label>
+                    <span
+                        class="info-badge"
+                        role="img"
+                        aria-label="统一尺度说明"
+                        tabindex="0"
+                        data-tip="勾选后所有页共用同一套纵轴范围（取全部类别中的最小／最大值），翻页时柱高可以直接横向对比；不勾选则每页各自缩放到自己的数据范围，单页看得更满，但跨页不可比。"
+                    >!</span>
                 </div>
 
                 <div class="category-pager" id="numericByCategoryPager" style="display:none;">
@@ -3836,6 +3851,14 @@
         if (nextCategoryPage) {
             nextCategoryPage.addEventListener("click", function () {
                 numericByCategoryPage += 1;
+                renderNumericByCategoryChart();
+                refreshLegendButtons();
+            });
+        }
+
+        const unifiedScaleToggle = document.getElementById("categoryUnifiedScale");
+        if (unifiedScaleToggle) {
+            unifiedScaleToggle.addEventListener("change", function () {
                 renderNumericByCategoryChart();
                 refreshLegendButtons();
             });
@@ -5979,31 +6002,31 @@
 
     function updateTimeGranularityHint() {
         const control = document.getElementById("timeGranularityControl");
-        const hint = document.getElementById("timeGranularityHint");
+        const hint = document.getElementById("timeGranularityBadge");
         if (!control || !hint) return;
         if (control.style.display === "none") {
-            hint.textContent = "";
+            hint.removeAttribute("data-tip");
             return;
         }
         const granularity = getTimeGranularity();
         const bucketCount = countUniqueTimePoints(granularity);
         if (!bucketCount) {
-            hint.textContent = "当前没有可用的时间点。";
+            hint.setAttribute("data-tip", "当前没有可用的时间点。");
             return;
         }
         if (granularity === "raw") {
-            hint.textContent = bucketCount > RAW_TIME_WARNING_THRESHOLD
+            hint.setAttribute("data-tip", bucketCount > RAW_TIME_WARNING_THRESHOLD
                 ? "当前为全部 " + bucketCount.toLocaleString() +
                   " 个时间点，数量较多时图表可能明显卡顿；建议改用「按小时聚合」。"
-                : "当前为全部 " + bucketCount.toLocaleString() + " 个时间点。";
+                : "当前为全部 " + bucketCount.toLocaleString() + " 个时间点。");
             return;
         }
         if (granularity !== "hour" && granularity !== "day") return;
         const unit = granularity === "hour" ? "小时" : "天";
-        hint.textContent =
+        hint.setAttribute("data-tip",
             "已按" + unit + "聚合：" + countUniqueTimePoints("raw").toLocaleString() +
             " 个原始时间点归并为 " + bucketCount.toLocaleString() + " 个" + unit + "度点（同一" +
-            unit + "内取" + (getTimeAggregationMode() === "sum" ? "合计" : "均值") + "）。";
+            unit + "内取" + (getTimeAggregationMode() === "sum" ? "合计" : "均值") + "）。");
     }
 
     function updateTimeAggregationHint() {
@@ -6193,14 +6216,20 @@
             return;
         }
 
-        let labels = Array.from(new Set(
+        /*
+         * bucketLabels 是分桶/查表用的原始键，labels 是给用户看的显示文本。
+         * 两者只在「按小时聚合」下不同（键是 2018-09-01T00，显示是
+         * 2018-09-01 00:00）——序列查找必须用键，否则小时档整条线都是 null。
+         */
+        const bucketLabels = Array.from(new Set(
             rows.map(function (row) { return isTimeIndex ? row.time_index : row.datetime; })
                 .filter(function (value) { return value !== undefined && value !== null && value !== ""; })
                 .map(function (value) { return timeBucketOf(value, granularity); })
         )).sort(function (a, b) {
             if (isTimeIndex) return Number(a) - Number(b);
             return a.localeCompare(b);
-        }).map(function (bucket) { return formatTimeBucketLabel(bucket, granularity); });
+        });
+        let labels = bucketLabels.map(function (bucket) { return formatTimeBucketLabel(bucket, granularity); });
         const palette = ["#4f46e5", "#0ea5e9", "#16a34a", "#f59e0b", "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#64748b", "#ec4899"];
         const aggregationMode = getTimeAggregationMode();
         const entries = Array.from(grouped.values()).sort((a, b) => {
@@ -6214,7 +6243,7 @@
          * 这样坐标轴刻度、tooltip 对应到的仍是同一个时间基准。
          */
         const seriesList = entries.map(function (item) {
-            return labels.map(function (label) {
+            return bucketLabels.map(function (label) {
                 return aggregateTimeValues(item.series.get(label), aggregationMode);
             });
         });
@@ -6453,14 +6482,20 @@
             return;
         }
 
-        const labels = Array.from(new Set(
+        /*
+         * bucketLabels 是分桶/查表用的原始键，labels 是给用户看的显示文本。
+         * 两者只在「按小时聚合」下不同（键是 2018-09-01T00，显示是
+         * 2018-09-01 00:00）——序列查找必须用键，否则小时档整条线都是 null。
+         */
+        const bucketLabels = Array.from(new Set(
             rows.map(function (row) { return isTimeIndex ? row.time_index : row.datetime; })
                 .filter(function (value) { return value !== undefined && value !== null && value !== ""; })
                 .map(function (value) { return timeBucketOf(value, granularity); })
         )).sort(function (a, b) {
             if (isTimeIndex) return Number(a) - Number(b);
             return a.localeCompare(b);
-        }).map(function (bucket) { return formatTimeBucketLabel(bucket, granularity); });
+        });
+        const labels = bucketLabels.map(function (bucket) { return formatTimeBucketLabel(bucket, granularity); });
         const palette = ["#4f46e5", "#0ea5e9", "#16a34a", "#f59e0b", "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#64748b", "#ec4899"];
         const entries = Array.from(grouped.values()).sort(function (a, b) {
             const na = Array.from(a.series.values()).reduce(function (sum, values) { return sum + values.length; }, 0);
@@ -6472,7 +6507,7 @@
             return {
                 column: item.column,
                 group: item.group,
-                values: labels.map(function (label) {
+                values: bucketLabels.map(function (label) {
                     return aggregateTimeValues(item.series.get(label), aggregationMode);
                 })
             };
@@ -6690,28 +6725,29 @@
     function updateNumericByCategoryPager(pageCount, total) {
         const pager = document.getElementById("numericByCategoryPager");
         const label = document.getElementById("numericByCategoryPageLabel");
-        const hint = document.getElementById("numericByCategoryPagerHint");
         const prev = document.getElementById("numericByCategoryPrev");
         const next = document.getElementById("numericByCategoryNext");
         if (!pager) return;
         if (!total || pageCount <= 1) {
             pager.style.display = "none";
-            if (hint) hint.textContent = total ? "共 " + total.toLocaleString() + " 个类别" : "";
             return;
         }
         pager.style.display = "";
         if (label) {
-            label.textContent =
-                "第 " + (numericByCategoryPage + 1) + " / " + pageCount + " 页（共 " +
-                total.toLocaleString() + " 个类别，每页 " + CATEGORY_PAGE_SIZE + " 个）";
-        }
-        if (hint) {
             const from = numericByCategoryPage * CATEGORY_PAGE_SIZE + 1;
             const to = Math.min(total, (numericByCategoryPage + 1) * CATEGORY_PAGE_SIZE);
-            hint.textContent = "当前显示第 " + from.toLocaleString() + "–" + to.toLocaleString() + " 个类别";
+            label.textContent =
+                "第 " + (numericByCategoryPage + 1) + " / " + pageCount +
+                " 页 · 类别 " + from.toLocaleString() + "–" + to.toLocaleString() +
+                " / 共 " + total.toLocaleString() + " 个";
         }
         if (prev) prev.disabled = numericByCategoryPage <= 0;
         if (next) next.disabled = numericByCategoryPage >= pageCount - 1;
+    }
+
+    function getUnifiedCategoryScale() {
+        const toggle = document.getElementById("categoryUnifiedScale");
+        return Boolean(toggle && toggle.checked);
     }
 
     function resetNumericByCategoryPaging() {
@@ -6791,6 +6827,27 @@
                 borderRadius: 5
             };
         });
+        /*
+         * 统一尺度：纵轴范围取「全部类别」（跨所有页）的最小／最大值，
+         * 翻页时柱高才能直接横向对比。用 suggestedMin/Max 而不是硬性
+         * min/max，让 Chart.js 仍然取整刻度、留出正常边距。
+         */
+        let unifiedBounds = null;
+        if (getUnifiedCategoryScale()) {
+            let min = Infinity;
+            let max = -Infinity;
+            allCategoryLabels.forEach(function (label) {
+                numericColumns.forEach(function (column) {
+                    const item = perColumn.get(column).get(label);
+                    if (!item || !item.count) return;
+                    const value = mode === "sum" ? item.sum : item.sum / item.count;
+                    if (!Number.isFinite(value)) return;
+                    if (value < min) min = value;
+                    if (value > max) max = value;
+                });
+            });
+            if (Number.isFinite(min) && Number.isFinite(max)) unifiedBounds = { min: min, max: max };
+        }
         hideChartMessage("numericByCategoryMessage");
         if (window.numericByCategoryChartInstance) window.numericByCategoryChartInstance.destroy();
         window.numericByCategoryChartInstance = new Chart(canvas, {
@@ -6808,7 +6865,12 @@
                 },
                 scales: {
                     x: { title: { display: true, text: categoryColumn }, ticks: { maxRotation: 45 } },
-                    y: { title: { display: true, text: mode === "sum" ? "合计" : "均值" }, beginAtZero: false }
+                    y: {
+                        title: { display: true, text: mode === "sum" ? "合计" : "均值" },
+                        beginAtZero: false,
+                        suggestedMin: unifiedBounds ? unifiedBounds.min : undefined,
+                        suggestedMax: unifiedBounds ? unifiedBounds.max : undefined
+                    }
                 }
             }
         });
